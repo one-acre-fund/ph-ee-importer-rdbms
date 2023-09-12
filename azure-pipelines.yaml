@@ -1,0 +1,70 @@
+trigger:
+  - main
+  - develop
+  - release/*
+
+pr:
+  - main
+  - develop
+  - release/*
+
+pool:
+  vmImage: "ubuntu-latest"
+
+steps:
+  - checkout: self
+    fetchDepth: 0
+    fetchTags: true
+    displayName: Check out source code
+
+  - script: |
+      VERSION_TAG=`git describe --abbrev=0 --tags`
+      echo "##vso[task.setvariable variable=VERSION_TAG]$VERSION_TAG"
+      IMAGE_TAGS="${VERSION_TAG}"
+      echo "##vso[task.setvariable variable=IMAGE_SEMANTIC_HASH]$IMAGE_TAGS"
+      echo Tags: $IMAGE_TAGS
+      echo "##vso[task.setvariable variable=IMAGE_TAGS]$IMAGE_TAGS"
+    displayName: Generate image tags
+
+  - task: Gradle@3
+    displayName: Gradlew build
+    inputs:
+      gradleWrapperFile: "gradlew"
+      tasks: "bootJar :test --info --build-cache"
+      javaHomeOption: "JDKVersion"
+      jdkVersionOption: "1.8"
+
+  - task: Docker@2
+    displayName: Login to Azure registry
+    inputs:
+      containerRegistry: azurecr-oaf
+      command: "login"
+
+  - task: Docker@2
+    displayName: Build docker image
+    inputs:
+      command: build
+      buildContext: "$(System.DefaultWorkingDirectory)"
+      repository: "oneacrefund/ph-ee-importer-rdbms"
+      dockerfile: "$(System.DefaultWorkingDirectory)/Dockerfile"
+      containerRegistry: "azurecr-oaf"
+      tags: |
+        $(IMAGE_TAGS)
+
+  - task: Docker@2
+    displayName: Publish image
+    condition: and(succeeded(), or(eq(variables['Build.SourceBranchName'], 'master'), eq(variables['Build.SourceBranchName'], 'develop'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/')))
+    inputs:
+      containerRegistry: "azurecr-oaf"
+      repository: "oneacrefund/ph-ee-importer-rdbms"
+      command: "push"
+      tags: |
+        $(IMAGE_TAGS)
+
+  - task: PublishBuildArtifacts@1
+    displayName: Publish configuration package
+    condition: and(succeeded(), or(eq(variables['Build.SourceBranchName'], 'main'), eq(variables['Build.SourceBranchName'], 'develop'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/')))
+    inputs:
+      PathtoPublish: $(Build.ArtifactStagingDirectory)
+      ArtifactName: "ph-ee-importer-rdbms"
+      publishLocation: "Container"
