@@ -127,6 +127,12 @@ bpmn:
     - id: "inbound_transfer_odoo"
       direction: "${bpmn.incoming-direction}"
       type: "${bpmn.transfer-type}"
+    - id: "inbound_tnm_fineract"
+      direction: "${bpmn.incoming-direction}"
+      type: "${bpmn.transfer-type}"
+    - id: "inbound_tnm_roster"
+      direction: "${bpmn.incoming-direction}"
+      type: "${bpmn.transfer-type}"
 
 logging:
   level:
