@@ -17,11 +17,17 @@ steps:
     fetchTags: true
     displayName: Check out source code
 
+  - task: GetRevision@1
+    displayName: "Get Revision"
+    inputs:
+      VariableName: Revision
+
   - script: |
-      VERSION_TAG=`git describe --abbrev=0 --tags`
+      VERSION_TAG=`./gradlew -q printVersion`
       echo "##vso[task.setvariable variable=VERSION_TAG]$VERSION_TAG"
-      IMAGE_TAGS="${VERSION_TAG}"
+      IMAGE_TAGS="${VERSION_TAG}.$(date '+%Y.%m.%d').$(Revision)"
       echo "##vso[task.setvariable variable=IMAGE_SEMANTIC_HASH]$IMAGE_TAGS"
+      if [[ "$(Build.SourceBranch)" == "refs/heads/main" ]] || [[ "$(Build.SourceBranch)" == refs/heads/release/* ]]; then IMAGE_TAGS="$VERSION_TAG,latest"; fi;
       echo Tags: $IMAGE_TAGS
       echo "##vso[task.setvariable variable=IMAGE_TAGS]$IMAGE_TAGS"
     displayName: Generate image tags
