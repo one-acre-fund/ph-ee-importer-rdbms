@@ -105,7 +105,12 @@ public class VariableParser {
             return;
         }
         if(jsonString.equals("true")) {
-            request.setState(TransactionRequestState.FAILED);
+            // Set NOT_AUTOSAVED state if the transaction didn't fail in previous steps, but AMS settlement fails
+            if (!TransactionRequestState.FAILED.equals(request.getState())) {
+                request.setState(TransactionRequestState.NOT_AUTOSAVED);
+            } else {
+                request.setState(TransactionRequestState.FAILED);
+            }
         } else {
             request.setState(TransactionRequestState.ACCEPTED);
         }
