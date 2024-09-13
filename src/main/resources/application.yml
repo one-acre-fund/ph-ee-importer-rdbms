@@ -133,6 +133,13 @@ bpmn:
     - id: "inbound_tnm_roster"
       direction: "${bpmn.incoming-direction}"
       type: "${bpmn.transfer-type}"
+    - id: "inbound_nbs_fineract"
+      direction: "${bpmn.incoming-direction}"
+      type: "${bpmn.transfer-type}"
+    - id: "inbound_nbs_roster"
+      direction: "${bpmn.incoming-direction}"
+      type: "${bpmn.transfer-type}"
+    
 
 logging:
   level:
