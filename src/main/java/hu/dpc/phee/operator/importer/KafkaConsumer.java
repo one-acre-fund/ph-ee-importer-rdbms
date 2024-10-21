@@ -74,9 +74,6 @@ public class KafkaConsumer implements ConsumerSeekAware {
             logger.info("Tenant name: " + tenantName);
             logger.info("bpmnprocessId: " + bpmnprocessId);
             TenantServerConnection tenant = repository.findOneBySchemaName(tenantName);
-            if(tenant != null) {
-                logger.info("TenantServerConnection: " + tenant.toString());
-            }
             ThreadLocalContextUtil.setTenant(tenant);
             Long midTime1 = System.currentTimeMillis();
             logger.debug("Mid Time 1 {}", (midTime1-startTime));
