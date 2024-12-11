@@ -32,7 +32,7 @@ dependencies {
 }
 
 group = 'hu.dpc.phee'
-version = '1.0.5-mifos-1.3.1'
+version = '1.0.6-mifos-1.3.1'
 sourceCompatibility = '1.8'
 
 publishing {
