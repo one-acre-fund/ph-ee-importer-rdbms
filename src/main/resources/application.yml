@@ -148,6 +148,9 @@ bpmn:
     - id: "inbound_airtel_fineract"
       direction: "${bpmn.incoming-direction}"
       type: "${bpmn.transfer-type}"
+    - id: "inbound_mtn_fineract"
+      direction: "${bpmn.incoming-direction}"
+      type: "${bpmn.transfer-type}"
 
 
 logging:

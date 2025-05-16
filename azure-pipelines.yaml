@@ -22,6 +22,13 @@ steps:
     inputs:
       VariableName: Revision
 
+  - task: JavaToolInstaller@0
+    displayName: 'Use Java 11'
+    inputs:
+      versionSpec: '11'
+      jdkArchitectureOption: 'x64'
+      jdkSourceOption: 'PreInstalled'
+
   - script: |
       VERSION_TAG=`./gradlew -q printVersion`
       echo "##vso[task.setvariable variable=VERSION_TAG]$VERSION_TAG"
