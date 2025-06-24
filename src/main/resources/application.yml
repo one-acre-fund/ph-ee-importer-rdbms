@@ -151,6 +151,9 @@ bpmn:
     - id: "inbound_mtn_fineract"
       direction: "${bpmn.incoming-direction}"
       type: "${bpmn.transfer-type}"
+    - id: "pos_payment"
+      direction: "${bpmn.incoming-direction}"
+      type: "${bpmn.transaction-request-type}"
 
 
 logging:
