@@ -1,4 +1,4 @@
-FROM openjdk:13
+FROM openjdk:18
 EXPOSE 8000
 
 COPY build/libs/*.jar .
