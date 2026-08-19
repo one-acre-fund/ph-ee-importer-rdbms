@@ -1,0 +1,38 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: ph-ee-importer-rdbms
+  title: PH Importer RDBMS
+  description: Imports PaymentHub workflow and transaction events into the relational store for operations reporting and reconciliation
+  annotations:
+    github.com/project-slug: one-acre-fund/ph-ee-importer-rdbms
+    backstage.io/kubernetes-id: ph-ee-importer-rdbms
+    sonarqube.org/project-key: one-acre-fund_ph-ee-importer-rdbms
+    backstage.io/code-coverage: sonarqube
+  tags:
+    - java
+    - spring-boot
+    - importer
+    - rdbms
+    - mysql
+    - kafka
+    - payment-hub
+    - paymenthub
+  links:
+    - url: https://elastic.oneacrefund.org/app/apm/services/ph-ee-connector-importer-rdbms
+      title: Elastic APM Dashboard
+      icon: globe
+    - url: https://elastic.oneacrefund.org/app/r/s/RFodK 
+      title: Application logs
+      icon: globe
+    - url: https://github.com/one-acre-fund/ph-ee-importer-rdbms/blob/release/mifos-1.3.1/.github/workflows/build.yaml
+      title: Build Pipeline
+      icon: build
+spec:
+  type: service
+  lifecycle: production
+  owner: group:one-acre-fund/credits-and-payments
+  system: operations
+  dependsOn:
+    - resource:default/paymenthub-mysql
+    - resource:default/kafka-cluster
