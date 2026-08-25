@@ -8,4 +8,6 @@ public interface TaskRepository extends CrudRepository<Task, Long> {
 
     List<Task> findByWorkflowInstanceKey(Long workflowInstanceKey);
 
+    List<Task> findByWorkflowInstanceKeyAndZeebeGeneration(Long workflowInstanceKey, Long zeebeGeneration);
+
 }

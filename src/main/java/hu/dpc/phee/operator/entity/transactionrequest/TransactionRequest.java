@@ -20,6 +20,9 @@ public class TransactionRequest extends AbstractPersistableCustom<Long> {
     @Column(name = "WORKFLOW_INSTANCE_KEY")
     private Long workflowInstanceKey;
 
+    @Column(name = "ZEEBE_GENERATION")
+    private Long zeebeGeneration;
+
     @Column(name = "TRANSACTION_ID")
     private String transactionId;
 
@@ -94,7 +97,12 @@ public class TransactionRequest extends AbstractPersistableCustom<Long> {
     }
 
     public TransactionRequest(Long workflowInstanceKey) {
+        this(workflowInstanceKey, 0L);
+    }
+
+    public TransactionRequest(Long workflowInstanceKey, Long zeebeGeneration) {
         this.workflowInstanceKey = workflowInstanceKey;
+        this.zeebeGeneration = zeebeGeneration;
         this.state = IN_PROGRESS;
     }
 
@@ -104,6 +112,14 @@ public class TransactionRequest extends AbstractPersistableCustom<Long> {
 
     public void setWorkflowInstanceKey(Long workflowInstanceKey) {
         this.workflowInstanceKey = workflowInstanceKey;
+    }
+
+    public Long getZeebeGeneration() {
+        return zeebeGeneration;
+    }
+
+    public void setZeebeGeneration(Long zeebeGeneration) {
+        this.zeebeGeneration = zeebeGeneration;
     }
 
     public String getTransactionId() {

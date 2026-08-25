@@ -22,6 +22,9 @@ public class Variable extends AbstractPersistableCustom<Long> {
     @Index(name = "idx_workflowInstanceKey")
     private Long workflowInstanceKey;
 
+    @Column(name = "ZEEBE_GENERATION")
+    private Long zeebeGeneration;
+
     @Column(name = "TIMESTAMP")
     private Long timestamp;
 
@@ -46,6 +49,14 @@ public class Variable extends AbstractPersistableCustom<Long> {
 
     public void setWorkflowInstanceKey(Long workflowInstanceKey) {
         this.workflowInstanceKey = workflowInstanceKey;
+    }
+
+    public Long getZeebeGeneration() {
+        return zeebeGeneration;
+    }
+
+    public void setZeebeGeneration(Long zeebeGeneration) {
+        this.zeebeGeneration = zeebeGeneration;
     }
 
     public Long getTimestamp() {

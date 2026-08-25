@@ -8,4 +8,6 @@ public interface VariableRepository extends CrudRepository<Variable, Long> {
 
     List<Variable> findByWorkflowInstanceKey(Long workflowInstanceKey);
 
+    List<Variable> findByWorkflowInstanceKeyAndZeebeGeneration(Long workflowInstanceKey, Long zeebeGeneration);
+
 }

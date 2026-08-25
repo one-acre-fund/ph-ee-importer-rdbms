@@ -36,7 +36,7 @@ public class InflightBatchManager {
             Batch batch = inflightBatches.remove(workflowInstanceKey);
             if (batch == null) {
                 logger.error("failed to remove in-flight batch {}", workflowInstanceKey);
-                batch = batchRepository.findByWorkflowInstanceKey(workflowInstanceKey);
+                batch = batchRepository.findFirstByWorkflowInstanceKeyAndCompletedAtIsNullOrderByIdDesc(workflowInstanceKey);
                 if (batch == null || batch.getCompletedAt() != null) {
                     logger.error("completed event arrived for non existent batch {} or it was already finished!", workflowInstanceKey);
                     return;
@@ -53,14 +53,37 @@ public class InflightBatchManager {
         synchronized (inflightBatches) {
             Batch batch = inflightBatches.get(workflowInstanceKey);
             if (batch == null) {
-                batch = batchRepository.findByWorkflowInstanceKey(workflowInstanceKey);
+                batch = batchRepository.findFirstByWorkflowInstanceKeyAndCompletedAtIsNullOrderByIdDesc(workflowInstanceKey);
                 if (batch == null) {
-                    batch = new Batch(workflowInstanceKey);
-                    logger.debug("started in-flight batch {}", batch.getWorkflowInstanceKey());
+                    Long nextGeneration = getNextGeneration(workflowInstanceKey);
+                    batch = new Batch(workflowInstanceKey, nextGeneration);
+                    logger.debug("started in-flight batch {} with generation {}", batch.getWorkflowInstanceKey(), nextGeneration);
+                } else if (batch.getZeebeGeneration() == null) {
+                    batch.setZeebeGeneration(0L);
                 }
                 inflightBatches.put(workflowInstanceKey, batch);
             }
             return batch;
         }
+    }
+
+    /**
+     * Memory-only lookup. Used on the hot path so child events do not query the DB
+     * after the process row is already inflight.
+     */
+    public Long peekGeneration(Long workflowInstanceKey) {
+        synchronized (inflightBatches) {
+            Batch batch = inflightBatches.get(workflowInstanceKey);
+            return batch == null ? null : batch.getZeebeGeneration();
+        }
+    }
+
+    private Long getNextGeneration(Long workflowInstanceKey) {
+        // Only called when creating a new row (first event for this key in this run).
+        Batch latestBatch = batchRepository.findTopByWorkflowInstanceKeyOrderByZeebeGenerationDesc(workflowInstanceKey);
+        if (latestBatch == null || latestBatch.getZeebeGeneration() == null) {
+            return 0L;
+        }
+        return latestBatch.getZeebeGeneration() + 1;
     }
 }

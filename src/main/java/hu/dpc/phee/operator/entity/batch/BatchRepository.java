@@ -8,4 +8,10 @@ public interface BatchRepository extends JpaRepository<Batch, Long>, JpaSpecific
 
     Batch findByWorkflowInstanceKey(Long workflowInstanceKey);
 
+    Batch findFirstByWorkflowInstanceKeyAndCompletedAtIsNullOrderByIdDesc(Long workflowInstanceKey);
+
+    Batch findTopByWorkflowInstanceKeyOrderByZeebeGenerationDesc(Long workflowInstanceKey);
+
+    Batch findByWorkflowInstanceKeyAndZeebeGeneration(Long workflowInstanceKey, Long zeebeGeneration);
+
 }

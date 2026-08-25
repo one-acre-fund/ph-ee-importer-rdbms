@@ -7,4 +7,10 @@ public interface TransferRepository extends JpaRepository<Transfer, Long>, JpaSp
 
     Transfer findByWorkflowInstanceKey(Long workflowInstanceKey);
 
+    Transfer findFirstByWorkflowInstanceKeyAndCompletedAtIsNullOrderByIdDesc(Long workflowInstanceKey);
+
+    Transfer findTopByWorkflowInstanceKeyOrderByZeebeGenerationDesc(Long workflowInstanceKey);
+
+    Transfer findByWorkflowInstanceKeyAndZeebeGeneration(Long workflowInstanceKey, Long zeebeGeneration);
+
 }

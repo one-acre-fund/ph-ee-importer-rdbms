@@ -40,7 +40,7 @@ public class InflightTransactionRequestManager {
             TransactionRequest transactionRequest = inflightTransactionRequests.remove(workflowInstanceKey);
             if (transactionRequest == null) {
                 logger.error("failed to remove in-flight transactionRequest {}", workflowInstanceKey);
-                transactionRequest = transactionRequestRepository.findByWorkflowInstanceKey(workflowInstanceKey);
+                transactionRequest = transactionRequestRepository.findFirstByWorkflowInstanceKeyAndCompletedAtIsNullOrderByIdDesc(workflowInstanceKey);
                 if (transactionRequest == null || transactionRequest.getCompletedAt() != null) {
                     logger.error("completed event arrived for non existent transactionRequest {} or it was already finished!", workflowInstanceKey);
                     return;
@@ -59,13 +59,36 @@ public class InflightTransactionRequestManager {
         synchronized (inflightTransactionRequests) {
             TransactionRequest transactionRequest = inflightTransactionRequests.get(workflowInstanceKey);
             if (transactionRequest == null) {
-                transactionRequest = transactionRequestRepository.findByWorkflowInstanceKey(workflowInstanceKey);
+                transactionRequest = transactionRequestRepository.findFirstByWorkflowInstanceKeyAndCompletedAtIsNullOrderByIdDesc(workflowInstanceKey);
                 if (transactionRequest == null) {
-                    transactionRequest = new TransactionRequest(workflowInstanceKey);
+                    Long nextGeneration = getNextGeneration(workflowInstanceKey);
+                    transactionRequest = new TransactionRequest(workflowInstanceKey, nextGeneration);
+                } else if (transactionRequest.getZeebeGeneration() == null) {
+                    transactionRequest.setZeebeGeneration(0L);
                 }
                 inflightTransactionRequests.put(workflowInstanceKey, transactionRequest);
             }
             return transactionRequest;
         }
+    }
+
+    /**
+     * Memory-only lookup. Used on the hot path so child events do not query the DB
+     * after the process row is already inflight.
+     */
+    public Long peekGeneration(Long workflowInstanceKey) {
+        synchronized (inflightTransactionRequests) {
+            TransactionRequest transactionRequest = inflightTransactionRequests.get(workflowInstanceKey);
+            return transactionRequest == null ? null : transactionRequest.getZeebeGeneration();
+        }
+    }
+
+    private Long getNextGeneration(Long workflowInstanceKey) {
+        // Only called when creating a new row (first event for this key in this run).
+        TransactionRequest latestTransactionRequest = transactionRequestRepository.findTopByWorkflowInstanceKeyOrderByZeebeGenerationDesc(workflowInstanceKey);
+        if (latestTransactionRequest == null || latestTransactionRequest.getZeebeGeneration() == null) {
+            return 0L;
+        }
+        return latestTransactionRequest.getZeebeGeneration() + 1;
     }
 }

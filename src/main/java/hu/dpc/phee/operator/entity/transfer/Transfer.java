@@ -18,6 +18,9 @@ public class Transfer extends AbstractPersistableCustom<Long> {
     @Column(name = "WORKFLOW_INSTANCE_KEY")
     private Long workflowInstanceKey;
 
+    @Column(name = "ZEEBE_GENERATION")
+    private Long zeebeGeneration;
+
     @Column(name = "TRANSACTION_ID")
     private String transactionId;
 
@@ -81,7 +84,12 @@ public class Transfer extends AbstractPersistableCustom<Long> {
     }
 
     public Transfer(Long workflowInstanceKey) {
+        this(workflowInstanceKey, 0L);
+    }
+
+    public Transfer(Long workflowInstanceKey, Long zeebeGeneration) {
         this.workflowInstanceKey = workflowInstanceKey;
+        this.zeebeGeneration = zeebeGeneration;
         this.status = TransferStatus.IN_PROGRESS;
     }
 
@@ -147,6 +155,14 @@ public class Transfer extends AbstractPersistableCustom<Long> {
 
     public void setWorkflowInstanceKey(Long paymentProcessId) {
         this.workflowInstanceKey = paymentProcessId;
+    }
+
+    public Long getZeebeGeneration() {
+        return zeebeGeneration;
+    }
+
+    public void setZeebeGeneration(Long zeebeGeneration) {
+        this.zeebeGeneration = zeebeGeneration;
     }
 
     public TransferStatus getStatus() {
