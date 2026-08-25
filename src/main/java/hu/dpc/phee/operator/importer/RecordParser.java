@@ -374,25 +374,28 @@ public class RecordParser {
 
     private void touchEntityStartedAt(Long workflowInstanceKey, String bpmnProcessId, DocumentContext event) {
         BpmnProcess bpmnProcess = bpmnProcessProperties.getById(bpmnProcessId);
+        if (bpmnProcess == null || bpmnProcess.getType() == null) {
+            return;
+        }
         Date eventTime = toEventTime(event);
         if (eventTime == null) {
             return;
         }
         if (transferType.equals(bpmnProcess.getType())) {
             Transfer transfer = inflightTransferManager.getOrCreateTransfer(workflowInstanceKey);
-            if (transfer.getStartedAt() == null) {
+            if (transfer != null && transfer.getStartedAt() == null) {
                 transfer.setStartedAt(eventTime);
                 transferRepository.save(transfer);
             }
         } else if (transactionRequestType.equals(bpmnProcess.getType())) {
             TransactionRequest transactionRequest = inflightTransactionRequestManager.getOrCreateTransactionRequest(workflowInstanceKey);
-            if (transactionRequest.getStartedAt() == null) {
+            if (transactionRequest != null && transactionRequest.getStartedAt() == null) {
                 transactionRequest.setStartedAt(eventTime);
                 transactionRequestRepository.save(transactionRequest);
             }
         } else if (batchType.equals(bpmnProcess.getType())) {
             Batch batch = inflightBatchManager.getOrCreateBatch(workflowInstanceKey);
-            if (batch.getStartedAt() == null) {
+            if (batch != null && batch.getStartedAt() == null) {
                 batch.setStartedAt(eventTime);
                 batchRepository.save(batch);
             }

@@ -13,6 +13,7 @@ import org.mockito.junit.MockitoJUnitRunner;
 import java.lang.reflect.Field;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -41,14 +42,6 @@ public class KafkaConsumerWorkflowInstanceTest {
 
     @Before
     public void setUp() throws Exception {
-        TenantServerConnection tenant = new TenantServerConnection();
-        tenant.setSchemaName("burundi");
-        when(repository.findOneBySchemaName("burundi")).thenReturn(tenant);
-        when(tempDocumentStore.getBpmnprocessId(PROCESS_DEFINITION_KEY)).thenReturn(null);
-        when(deploymentRegistry.resolveBpmnProcessId(PROCESS_DEFINITION_KEY))
-                .thenReturn("inbound_bancobu_fineract-burundi");
-        when(tempDocumentStore.takeStoredDocuments(PROCESS_DEFINITION_KEY)).thenReturn(java.util.Collections.emptyList());
-
         Field resetField = KafkaConsumer.class.getDeclaredField("reset");
         resetField.setAccessible(true);
         resetField.set(kafkaConsumer, false);
@@ -56,6 +49,10 @@ public class KafkaConsumerWorkflowInstanceTest {
 
     @Test
     public void processesLegacyWorkflowInstanceActivatingBeforeVariablesFromDeploymentLookup() throws Exception {
+        TenantServerConnection tenant = new TenantServerConnection();
+        tenant.setSchemaName("burundi");
+        when(repository.findOneBySchemaName("burundi")).thenReturn(tenant);
+
         String variable = "{"
                 + "\"valueType\":\"VARIABLE\","
                 + "\"timestamp\":2,"
@@ -102,6 +99,9 @@ public class KafkaConsumerWorkflowInstanceTest {
         kafkaConsumer.listen(deployment);
 
         verify(deploymentRegistry).registerFromDeployment(any(DocumentContext.class));
-        verify(recordParser, never()).processWorkflowInstance(any(DocumentContext.class));
+        verify(recordParser, never()).processWorkflowInstance(any(DocumentContext.class), any());
+        verify(recordParser, never()).processVariable(any(DocumentContext.class), any());
+        verify(repository, never()).findOneBySchemaName(any());
+        verify(tempDocumentStore, never()).takeStoredDocuments(anyLong());
     }
 }
