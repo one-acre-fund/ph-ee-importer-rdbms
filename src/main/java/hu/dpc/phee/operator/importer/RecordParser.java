@@ -14,7 +14,9 @@ import hu.dpc.phee.operator.entity.task.TaskRepository;
 import hu.dpc.phee.operator.entity.tenant.ThreadLocalContextUtil;
 import hu.dpc.phee.operator.entity.transactionrequest.TransactionRequest;
 import hu.dpc.phee.operator.entity.transactionrequest.TransactionRequestRepository;
+import hu.dpc.phee.operator.entity.transactionrequest.TransactionRequestState;
 import hu.dpc.phee.operator.entity.transfer.Transfer;
+import hu.dpc.phee.operator.entity.transfer.TransferStatus;
 import hu.dpc.phee.operator.entity.transfer.TransferRepository;
 import hu.dpc.phee.operator.entity.variable.Variable;
 import hu.dpc.phee.operator.entity.variable.VariableRepository;
@@ -97,6 +99,9 @@ public class RecordParser {
     @Autowired
     private CsvMapper csvMapper;
 
+    @Autowired
+    private WorkflowGenerationResolver workflowGenerationResolver;
+
     private final Map<Long, Long> inflightCallActivities = new ConcurrentHashMap<>();
 
     public void addVariableToEntity(DocumentContext newVariable, String bpmnProcessId) {
@@ -106,7 +111,7 @@ public class RecordParser {
         }
         logger.debug("newVariable in RecordParser: {}", newVariable.jsonString()); //
         String name = newVariable.read("$.value.name");
-        Long workflowInstanceKey = newVariable.read("$.value.processInstanceKey");
+        Long workflowInstanceKey = ZeebeRecordReader.readProcessInstanceKey(newVariable);
         if (inflightCallActivities.containsKey(workflowInstanceKey)) {
             Long parentInstanceKey = inflightCallActivities.get(workflowInstanceKey);
             logger.debug("variable {} in instance {} has parent workflowInstance {}", name, workflowInstanceKey, parentInstanceKey);
@@ -121,6 +126,7 @@ public class RecordParser {
 
                 Transfer transfer = inflightTransferManager.getOrCreateTransfer(workflowInstanceKey);
                 variableParser.getTransferParsers().get(name).accept(Pair.of(transfer, value));
+                applyTransferTimestamps(transfer, newVariable);
                 transferRepository.save(transfer);
             }
         } else if (transactionRequestType.equals(bpmnProcess.getType())) {
@@ -133,6 +139,7 @@ public class RecordParser {
                 if(transactionRequest.getDirection() == null) {
                     transactionRequest.setDirection(bpmnProcess.getDirection());
                 }
+                applyTransactionRequestTimestamps(transactionRequest, newVariable);
                 transactionRequestRepository.save(transactionRequest);
             }
         } else if (batchType.equals(bpmnProcess.getType())) {
@@ -162,42 +169,51 @@ public class RecordParser {
         }
     }
 
-    public DocumentContext processVariable(DocumentContext json) {
-        Long workflowInstanceKey = json.read("$.value.processInstanceKey");
+    public DocumentContext processVariable(DocumentContext json, String bpmnProcessId) {
+        Long workflowInstanceKey = ZeebeRecordReader.readProcessInstanceKey(json);
+        Long generationKey = workflowInstanceKey;
+        if (inflightCallActivities.containsKey(workflowInstanceKey)) {
+            generationKey = inflightCallActivities.get(workflowInstanceKey);
+        }
         String name = json.read("$.value.name");
-        Long newTimestamp = json.read("$.timestamp");
-        List<Variable> existingVariables = variableRepository.findByWorkflowInstanceKey(workflowInstanceKey);
+        Long newTimestamp = ZeebeRecordReader.readTimestamp(json);
+        Long zeebeGeneration = workflowGenerationResolver.ensureGeneration(bpmnProcessId, generationKey);
+        List<Variable> existingVariables = variableRepository.findByWorkflowInstanceKeyAndZeebeGeneration(workflowInstanceKey, zeebeGeneration);
         if (existingVariables != null && !existingVariables.isEmpty()) {
             if (existingVariables.stream().filter(existing -> {
                 return name.equals(existing.getName()) && newTimestamp <= existing.getTimestamp(); // variable already inserted before
             }).findFirst().orElse(null) != null) {
-                logger.debug("Variable {} already inserted at {} for instance {}, skip processing!", name, newTimestamp, workflowInstanceKey);
+                logger.info("Variable {} already inserted at {} for instance {} generation {}, skip processing!",
+                        name, newTimestamp, workflowInstanceKey, zeebeGeneration);
                 return null;
             }
         }
 
         Variable variable = new Variable();
         variable.setWorkflowInstanceKey(workflowInstanceKey);
+        variable.setZeebeGeneration(zeebeGeneration);
         variable.setTimestamp(newTimestamp);
-        variable.setWorkflowKey(json.read("$.value.processDefinitionKey"));
+        variable.setWorkflowKey(ZeebeRecordReader.readProcessDefinitionKey(json));
         variable.setName(name);
         String value = json.read("$.value.value");
         variable.setValue(value);
         variableRepository.save(variable);
+        touchEntityStartedAt(workflowInstanceKey, bpmnProcessId, json);
         return json;
     }
 
-    public void processWorkflowInstance(DocumentContext json) {
-        String bpmnProcessId = json.read("$.value.bpmnProcessId");
-        BpmnProcess bpmnProcess = bpmnProcessProperties.getById(bpmnProcessId.split("-")[0]);
-        Long workflowInstanceKey = json.read("$.value.processInstanceKey");
-        Long timestamp = json.read("$.timestamp");
-        String intent = json.read("$.intent");
-        Object parentWorkflowInstanceKey = json.read("$.value.parentProcessInstanceKey");
-        boolean hasParent = false;
-        if (parentWorkflowInstanceKey instanceof Long && (Long) parentWorkflowInstanceKey > 0) {
-            hasParent = true;
+    public void processWorkflowInstance(DocumentContext json, String resolvedBpmnProcessId) {
+        String bpmnProcessBaseId = ZeebeRecordReader.resolveBpmnProcessBaseId(json, resolvedBpmnProcessId);
+        if (bpmnProcessBaseId == null) {
+            logger.error("Cannot resolve bpmnProcessId for process instance event {}", json.jsonString());
+            return;
         }
+        BpmnProcess bpmnProcess = bpmnProcessProperties.getById(bpmnProcessBaseId);
+        Long workflowInstanceKey = ZeebeRecordReader.readProcessInstanceKey(json);
+        Long timestamp = ZeebeRecordReader.readTimestamp(json);
+        String intent = json.read("$.intent");
+        Long parentWorkflowInstanceKey = ZeebeRecordReader.readParentProcessInstanceKey(json);
+        boolean hasParent = parentWorkflowInstanceKey != null;
 
         String elementId = json.read("$.value.elementId");
         Long callActivityKey = json.read("$.key");
@@ -205,24 +221,28 @@ public class RecordParser {
         if (transferType.equals(bpmnProcess.getType())) {
             if ("ELEMENT_ACTIVATING".equals(intent)) {
                 if (hasParent) {
-                    logger.debug("Sub process {} with key {} started from parent instance {}", bpmnProcessId, callActivityKey, parentWorkflowInstanceKey);
-                    inflightCallActivities.put(callActivityKey, (Long) parentWorkflowInstanceKey);
-                    inflightTransferManager.transferStarted((Long) parentWorkflowInstanceKey, timestamp, outgoingDirection);
+                    logger.info("Sub process {} with key {} started from parent instance {}", bpmnProcessBaseId, callActivityKey, parentWorkflowInstanceKey);
+                    inflightCallActivities.put(callActivityKey, parentWorkflowInstanceKey);
+                    inflightTransferManager.transferStarted(parentWorkflowInstanceKey, timestamp, outgoingDirection);
                 } else {
+                    logger.info("Transfer process {} started for instance {}", bpmnProcessBaseId, workflowInstanceKey);
                     inflightTransferManager.transferStarted(workflowInstanceKey, timestamp, bpmnProcess.getDirection());
                 }
             } else if ("ELEMENT_COMPLETED".equals(intent)) {
                 if (inflightCallActivities.containsKey(workflowInstanceKey)) {
                     Long parentInstanceKey = inflightCallActivities.remove(workflowInstanceKey);
-                    logger.debug("Sub process {} with key {} ended from parent instance {}", bpmnProcessId, callActivityKey, parentInstanceKey);
+                    logger.info("Sub process {} with key {} ended from parent instance {}", bpmnProcessBaseId, callActivityKey, parentInstanceKey);
                     workflowInstanceKey = parentInstanceKey;
                 }
+                logger.info("Transfer process {} completed for instance {}", bpmnProcessBaseId, workflowInstanceKey);
                 inflightTransferManager.transferEnded(workflowInstanceKey, timestamp);
             }
         } else if (transactionRequestType.equals(bpmnProcess.getType())) {
             if ("ELEMENT_ACTIVATING".equals(intent)) {
+                logger.info("Transaction request process {} started for instance {}", bpmnProcessBaseId, workflowInstanceKey);
                 inflightTransactionRequestManager.transactionRequestStarted(workflowInstanceKey, timestamp, bpmnProcess.getDirection());
             } else if ("ELEMENT_COMPLETED".equals(intent)) {
+                logger.info("Transaction request process {} completed for instance {}", bpmnProcessBaseId, workflowInstanceKey);
                 inflightTransactionRequestManager.transactionRequestEnded(workflowInstanceKey, timestamp);
             }
         } else if (batchType.equals(bpmnProcess.getType())) {
@@ -236,38 +256,45 @@ public class RecordParser {
                 inflightBatchManager.batchEnded(workflowInstanceKey, timestamp);
             }
         } else {
-            logger.error("Skip parsing bpmnProcess: {}, bpmnProcessId: {}, document: {} as bpmn isn't set",
-                    bpmnProcess, bpmnProcessId, json.jsonString());
+            logger.error("Skip parsing bpmnProcess: {}, resolvedBpmnProcessId: {}, document: {} as bpmn isn't set",
+                    bpmnProcess, bpmnProcessBaseId, json.jsonString());
         }
     }
 
-    public void processTask(DocumentContext json) {
+    public void processTask(DocumentContext json, String bpmnProcessId) {
         String type = json.read("$.value.type");
         if (type == null) {
             return;
         }
 
-        Long workflowInstanceKey = json.read("$.value.processInstanceKey");
+        Long workflowInstanceKey = ZeebeRecordReader.readProcessInstanceKey(json);
+        Long generationKey = workflowInstanceKey;
+        if (inflightCallActivities.containsKey(workflowInstanceKey)) {
+            generationKey = inflightCallActivities.get(workflowInstanceKey);
+        }
         String newElementId = json.read("$.value.elementId");
-        Long newTimestamp = json.read("$.timestamp");
+        Long newTimestamp = ZeebeRecordReader.readTimestamp(json);
         String newIntent = json.read("$.intent");
-        List<Task> existingTasks = taskRepository.findByWorkflowInstanceKey(workflowInstanceKey);
+        Long zeebeGeneration = workflowGenerationResolver.ensureGeneration(bpmnProcessId, generationKey);
+        List<Task> existingTasks = taskRepository.findByWorkflowInstanceKeyAndZeebeGeneration(workflowInstanceKey, zeebeGeneration);
         if (existingTasks != null && !existingTasks.isEmpty()) {
             if (existingTasks.stream().filter(existing -> {
                 return newElementId.equals(existing.getElementId()) && newIntent.equals(existing.getIntent()); // task intent inserts happens for only once
             }).findFirst().orElse(null) != null) {
-                logger.info("Task {} with intent {} already inserted at {} for instance {}, skip processing!",
+                logger.info("Task {} with intent {} already inserted at {} for instance {} generation {}, skip processing!",
                         newElementId,
                         newIntent,
                         newTimestamp,
-                        workflowInstanceKey);
+                        workflowInstanceKey,
+                        zeebeGeneration);
                 return;
             }
         }
 
         Task task = new Task();
         task.setWorkflowInstanceKey(workflowInstanceKey);
-        task.setWorkflowKey(json.read("$.value.processDefinitionKey"));
+        task.setZeebeGeneration(zeebeGeneration);
+        task.setWorkflowKey(ZeebeRecordReader.readProcessDefinitionKey(json));
         task.setTimestamp(newTimestamp);
         task.setIntent(newIntent);
         task.setRecordType(json.read("$.recordType"));
@@ -310,10 +337,18 @@ public class RecordParser {
             return;
         }
 
-        Batch batch = batchRepository.findByWorkflowInstanceKey(workflowInstanceKey);
+        Batch batch = batchRepository.findFirstByWorkflowInstanceKeyAndCompletedAtIsNullOrderByIdDesc(workflowInstanceKey);
+        if (batch == null) {
+            batch = batchRepository.findTopByWorkflowInstanceKeyOrderByZeebeGenerationDesc(workflowInstanceKey);
+        }
+        if (batch == null) {
+            logger.error("No batch found for workflow instance key {}, skip transfer update", workflowInstanceKey);
+            return;
+        }
         for (Transaction transaction: transactionList) {
             Transfer transfer = BatchFormatToTransferMapper.mapToTransferEntity(transaction);
             transfer.setWorkflowInstanceKey(workflowInstanceKey);
+            transfer.setZeebeGeneration(batch.getZeebeGeneration());
             transfer.setBatchId(strip(tempDocumentStore.getBatchId(workflowInstanceKey)));
             transfer.setCompletedAt(new Date(completeTimestamp));
             transfer.setTransactionId(transaction.getRequestId());
@@ -331,5 +366,81 @@ public class RecordParser {
             transferRepository.save(transfer);
         }
 
+    }
+
+    public void processWorkflowInstance(DocumentContext json) {
+        processWorkflowInstance(json, ZeebeRecordReader.resolveBpmnProcessBaseId(json, null));
+    }
+
+    private void touchEntityStartedAt(Long workflowInstanceKey, String bpmnProcessId, DocumentContext event) {
+        BpmnProcess bpmnProcess = bpmnProcessProperties.getById(bpmnProcessId);
+        if (bpmnProcess == null || bpmnProcess.getType() == null) {
+            return;
+        }
+        Date eventTime = toEventTime(event);
+        if (eventTime == null) {
+            return;
+        }
+        if (transferType.equals(bpmnProcess.getType())) {
+            Transfer transfer = inflightTransferManager.getOrCreateTransfer(workflowInstanceKey);
+            if (transfer != null && transfer.getStartedAt() == null) {
+                transfer.setStartedAt(eventTime);
+                transferRepository.save(transfer);
+            }
+        } else if (transactionRequestType.equals(bpmnProcess.getType())) {
+            TransactionRequest transactionRequest = inflightTransactionRequestManager.getOrCreateTransactionRequest(workflowInstanceKey);
+            if (transactionRequest != null && transactionRequest.getStartedAt() == null) {
+                transactionRequest.setStartedAt(eventTime);
+                transactionRequestRepository.save(transactionRequest);
+            }
+        } else if (batchType.equals(bpmnProcess.getType())) {
+            Batch batch = inflightBatchManager.getOrCreateBatch(workflowInstanceKey);
+            if (batch != null && batch.getStartedAt() == null) {
+                batch.setStartedAt(eventTime);
+                batchRepository.save(batch);
+            }
+        }
+    }
+
+    private void applyTransferTimestamps(Transfer transfer, DocumentContext variableEvent) {
+        Date eventTime = toEventTime(variableEvent);
+        if (eventTime == null) {
+            return;
+        }
+        if (transfer.getStartedAt() == null) {
+            transfer.setStartedAt(eventTime);
+        }
+        if (transfer.getCompletedAt() == null && isTerminalTransferStatus(transfer.getStatus())) {
+            transfer.setCompletedAt(eventTime);
+        }
+    }
+
+    private void applyTransactionRequestTimestamps(TransactionRequest transactionRequest, DocumentContext variableEvent) {
+        Date eventTime = toEventTime(variableEvent);
+        if (eventTime == null) {
+            return;
+        }
+        if (transactionRequest.getStartedAt() == null) {
+            transactionRequest.setStartedAt(eventTime);
+        }
+        if (transactionRequest.getCompletedAt() == null && isTerminalTransactionRequestState(transactionRequest.getState())) {
+            transactionRequest.setCompletedAt(eventTime);
+        }
+    }
+
+    private Date toEventTime(DocumentContext event) {
+        Long timestamp = ZeebeRecordReader.readTimestamp(event);
+        return timestamp == null ? null : new Date(timestamp);
+    }
+
+    private boolean isTerminalTransferStatus(TransferStatus status) {
+        return TransferStatus.COMPLETED.equals(status) || TransferStatus.FAILED.equals(status);
+    }
+
+    private boolean isTerminalTransactionRequestState(TransactionRequestState state) {
+        return TransactionRequestState.ACCEPTED.equals(state)
+                || TransactionRequestState.FAILED.equals(state)
+                || TransactionRequestState.REJECTED.equals(state)
+                || TransactionRequestState.NOT_AUTOSAVED.equals(state);
     }
 }

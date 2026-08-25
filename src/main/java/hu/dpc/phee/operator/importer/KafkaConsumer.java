@@ -12,8 +12,10 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.listener.ConsumerSeekAware;
 import org.springframework.stereotype.Component;
+
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -38,36 +40,44 @@ public class KafkaConsumer implements ConsumerSeekAware {
     @Autowired
     private TempDocumentStore tempDocumentStore;
 
+    @Autowired
+    private ZeebeDeploymentRegistry deploymentRegistry;
+
     @KafkaListener(topics = "${importer.kafka.topic}")
     public void listen(String rawData) {
         Long startTime = System.currentTimeMillis();
         try {
             DocumentContext incomingRecord = JsonPathReader.parse(rawData);
             logger.debug("from kafka: {}", incomingRecord.jsonString());
-            if("DEPLOYMENT".equals(incomingRecord.read("$.valueType"))) {
-                logger.info("Deployment event arrived for bpmn: {}, skip processing", incomingRecord.read("$.value.deployedWorkflows[0].bpmnProcessId", String.class));
+
+            String valueType = incomingRecord.read("$.valueType", String.class);
+            if ("DEPLOYMENT".equals(valueType)) {
+                deploymentRegistry.registerFromDeployment(incomingRecord);
                 return;
             }
 
-            if(incomingRecord.read("$.valueType").equals("VARIABLE_DOCUMENT")) {
+            if ("VARIABLE_DOCUMENT".equals(valueType)) {
                 logger.info("Skipping VARIABLE_DOCUMENT record ");
                 return;
             }
 
-            Long workflowKey = incomingRecord.read("$.value.processDefinitionKey");
-            String bpmnprocessIdWithTenant = incomingRecord.read("$.value.bpmnProcessId");
+            Long processDefinitionKey = ZeebeRecordReader.readProcessDefinitionKey(incomingRecord);
             Long recordKey = incomingRecord.read("$.key");
+            String bpmnprocessIdWithTenant = resolveBpmnProcessId(incomingRecord, processDefinitionKey);
             logger.info("bpmnprocessIdWithTenant: " + bpmnprocessIdWithTenant);
-            if(bpmnprocessIdWithTenant == null) {
-                bpmnprocessIdWithTenant = tempDocumentStore.getBpmnprocessId(workflowKey);
-                if (bpmnprocessIdWithTenant == null) {
-                    tempDocumentStore.storeDocument(workflowKey, incomingRecord);
-                    logger.info("Record with key {} workflowkey {} has no associated bpmn, stored temporarily", recordKey, workflowKey);
+
+            if (bpmnprocessIdWithTenant == null) {
+                if (processDefinitionKey == null) {
+                    logger.warn("Record with key {} has no processDefinitionKey, skip processing", recordKey);
                     return;
                 }
-            } else {
-                tempDocumentStore.setBpmnprocessId(workflowKey, bpmnprocessIdWithTenant);
+                tempDocumentStore.storeDocument(processDefinitionKey, incomingRecord);
+                logger.info("Record with key {} processDefinitionKey {} has no associated bpmn, stored temporarily",
+                        recordKey, processDefinitionKey);
+                return;
             }
+
+            tempDocumentStore.setBpmnprocessId(processDefinitionKey, bpmnprocessIdWithTenant);
 
             String tenantName = bpmnprocessIdWithTenant.substring(bpmnprocessIdWithTenant.indexOf("-") + 1);
             String bpmnprocessId = bpmnprocessIdWithTenant.substring(0, bpmnprocessIdWithTenant.indexOf("-"));
@@ -75,52 +85,25 @@ public class KafkaConsumer implements ConsumerSeekAware {
             logger.info("bpmnprocessId: " + bpmnprocessId);
             TenantServerConnection tenant = repository.findOneBySchemaName(tenantName);
             ThreadLocalContextUtil.setTenant(tenant);
-            Long midTime1 = System.currentTimeMillis();
-            logger.debug("Mid Time 1 {}", (midTime1-startTime));
+            logger.debug("Mid Time 1 {}", (System.currentTimeMillis() - startTime));
+
             List<DocumentContext> documents = new ArrayList<>();
-            List<DocumentContext> storedDocuments = tempDocumentStore.takeStoredDocuments(workflowKey);
-            if(!storedDocuments.isEmpty()) {
-                logger.info("Reprocessing {} previously stored records with workflowKey {}", storedDocuments.size(), workflowKey);
+            List<DocumentContext> storedDocuments = tempDocumentStore.takeStoredDocuments(processDefinitionKey);
+            if (!storedDocuments.isEmpty()) {
+                logger.info("Reprocessing {} previously stored records with processDefinitionKey {}",
+                        storedDocuments.size(), processDefinitionKey);
                 documents.addAll(storedDocuments);
             }
             documents.add(incomingRecord);
-            Long midTime2 = System.currentTimeMillis();
-            logger.debug("Mid Time 2 {}", (midTime2-startTime));
+            documents.sort(Comparator
+                    .comparingInt(ZeebeRecordReader::processingPriority)
+                    .thenComparing(ZeebeRecordReader::readTimestamp, Comparator.nullsLast(Long::compareTo)));
 
             logger.debug("Start processing of {} documents.", documents.size());
-            for(DocumentContext doc : documents) {
-                String valueType = null;
-                try {
-                    valueType = doc.read("$.valueType");
-                    logger.info("Processing document of type {}", valueType);
-                    switch (valueType) {
-                        case "VARIABLE":
-                            DocumentContext processedVariable = recordParser.processVariable(doc); // TODO prepare for parent workflow
-                            recordParser.addVariableToEntity(processedVariable, bpmnprocessId); // Call to store transfer
-                            break;
-                        case "JOB":
-                            recordParser.processTask(doc);
-                            break;
-                        case "PROCESS_INSTANCE":
-                            if ("PROCESS".equals(doc.read("$.value.bpmnElementType"))) {
-                                recordParser.processWorkflowInstance(doc);
-                            }
-                            break;
-                        case "INCIDENT":
-                            logger.info("Doc {}", incomingRecord.jsonString());
-                            break;
-                    }
-                } catch (Exception ex) {
-                    logger.error("Failed to process document:\n{}\nof valueType:\n{}\nerror: {}\ntrace: {}",
-                            doc.jsonString(),
-                            valueType,
-                            ex.getMessage(),
-                            limitStackTrace(ex));
-                    tempDocumentStore.storeDocument(workflowKey, doc);
-                }
+            for (DocumentContext doc : documents) {
+                processDocument(doc, bpmnprocessId, processDefinitionKey);
             }
-            Long endTime = System.currentTimeMillis();
-            logger.debug("Total Time 1 {}", (endTime-startTime));
+            logger.debug("Total Time 1 {}", (System.currentTimeMillis() - startTime));
         } catch (Exception ex) {
             logger.error("Could not parse zeebe event:\n{}\nerror: {}\ntrace: {}",
                     rawData,
@@ -128,8 +111,62 @@ public class KafkaConsumer implements ConsumerSeekAware {
                     limitStackTrace(ex));
         } finally {
             ThreadLocalContextUtil.clear();
-            Long endTime2 = System.currentTimeMillis();
-            logger.debug("Total Time 2 {}", (endTime2-startTime));
+            logger.debug("Total Time 2 {}", (System.currentTimeMillis() - startTime));
+        }
+    }
+
+    private String resolveBpmnProcessId(DocumentContext record, Long processDefinitionKey) {
+        String bpmnprocessIdWithTenant = ZeebeRecordReader.readBpmnProcessIdWithTenant(record);
+        if (bpmnprocessIdWithTenant != null) {
+            return bpmnprocessIdWithTenant;
+        }
+        if (processDefinitionKey != null) {
+            bpmnprocessIdWithTenant = tempDocumentStore.getBpmnprocessId(processDefinitionKey);
+            if (bpmnprocessIdWithTenant != null) {
+                return bpmnprocessIdWithTenant;
+            }
+            return deploymentRegistry.resolveBpmnProcessId(processDefinitionKey);
+        }
+        return null;
+    }
+
+    private void processDocument(DocumentContext doc, String bpmnprocessId, Long processDefinitionKey) {
+        String valueType = null;
+        try {
+            valueType = doc.read("$.valueType", String.class);
+            logger.info("Processing document of type {}", valueType);
+            switch (valueType) {
+                case "VARIABLE":
+                    DocumentContext processedVariable = recordParser.processVariable(doc, bpmnprocessId);
+                    if (processedVariable != null) {
+                        recordParser.addVariableToEntity(processedVariable, bpmnprocessId);
+                    }
+                    break;
+                case "JOB":
+                    recordParser.processTask(doc, bpmnprocessId);
+                    break;
+                case "PROCESS_INSTANCE":
+                case "WORKFLOW_INSTANCE":
+                    if (ZeebeRecordReader.isRootProcessElement(doc)) {
+                        recordParser.processWorkflowInstance(doc, bpmnprocessId);
+                    } else {
+                        logger.debug("Skipping non-root process element for {}", valueType);
+                    }
+                    break;
+                case "INCIDENT":
+                    logger.info("Doc {}", doc.jsonString());
+                    break;
+                default:
+                    logger.debug("Skipping unsupported valueType {}", valueType);
+                    break;
+            }
+        } catch (Exception ex) {
+            logger.error("Failed to process document:\n{}\nof valueType:\n{}\nerror: {}\ntrace: {}",
+                    doc.jsonString(),
+                    valueType,
+                    ex.getMessage(),
+                    limitStackTrace(ex));
+            tempDocumentStore.storeDocument(processDefinitionKey, doc);
         }
     }
 
@@ -141,7 +178,7 @@ public class KafkaConsumer implements ConsumerSeekAware {
     }
 
     @Override
-    public void onPartitionsAssigned(Map<TopicPartition, Long> assignments, ConsumerSeekCallback callback) {
+    public void onPartitionsAssigned(Map<TopicPartition, Long> assignments, ConsumerSeekAware.ConsumerSeekCallback callback) {
         if (reset) {
             assignments.keySet().stream()
                     .filter(partition -> partition.topic().equals(kafkaTopic))

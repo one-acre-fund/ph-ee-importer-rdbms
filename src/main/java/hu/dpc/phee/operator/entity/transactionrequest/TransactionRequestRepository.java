@@ -6,4 +6,10 @@ public interface TransactionRequestRepository extends CrudRepository<Transaction
 
     TransactionRequest findByWorkflowInstanceKey(Long workflowInstanceKey);
 
+    TransactionRequest findFirstByWorkflowInstanceKeyAndCompletedAtIsNullOrderByIdDesc(Long workflowInstanceKey);
+
+    TransactionRequest findTopByWorkflowInstanceKeyOrderByZeebeGenerationDesc(Long workflowInstanceKey);
+
+    TransactionRequest findByWorkflowInstanceKeyAndZeebeGeneration(Long workflowInstanceKey, Long zeebeGeneration);
+
 }

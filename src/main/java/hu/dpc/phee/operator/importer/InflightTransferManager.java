@@ -36,7 +36,7 @@ public class InflightTransferManager {
             Transfer transfer = inflightTransfers.remove(workflowInstanceKey);
             if (transfer == null) {
                 logger.error("failed to remove in-flight transfer {}", workflowInstanceKey);
-                transfer = transferRepository.findByWorkflowInstanceKey(workflowInstanceKey);
+                transfer = transferRepository.findFirstByWorkflowInstanceKeyAndCompletedAtIsNullOrderByIdDesc(workflowInstanceKey);
                 if (transfer == null || transfer.getCompletedAt() != null) {
                     logger.error("completed event arrived for non existent transfer {} or it was already finished!", workflowInstanceKey);
                     return;
@@ -52,14 +52,37 @@ public class InflightTransferManager {
         synchronized (inflightTransfers) {
             Transfer transfer = inflightTransfers.get(workflowInstanceKey);
             if (transfer == null) {
-                transfer = transferRepository.findByWorkflowInstanceKey(workflowInstanceKey);
+                transfer = transferRepository.findFirstByWorkflowInstanceKeyAndCompletedAtIsNullOrderByIdDesc(workflowInstanceKey);
                 if (transfer == null) {
-                    transfer = new Transfer(workflowInstanceKey); // Sets status to ONGOING
-                    logger.debug("started in-flight transfer {}", transfer.getWorkflowInstanceKey());
+                    Long nextGeneration = getNextGeneration(workflowInstanceKey);
+                    transfer = new Transfer(workflowInstanceKey, nextGeneration);
+                    logger.debug("started in-flight transfer {} with generation {}", transfer.getWorkflowInstanceKey(), nextGeneration);
+                } else if (transfer.getZeebeGeneration() == null) {
+                    transfer.setZeebeGeneration(0L);
                 }
                 inflightTransfers.put(workflowInstanceKey, transfer);
             }
             return transfer;
         }
+    }
+
+    /**
+     * Memory-only lookup. Used on the hot path so child events do not query the DB
+     * after the process row is already inflight.
+     */
+    public Long peekGeneration(Long workflowInstanceKey) {
+        synchronized (inflightTransfers) {
+            Transfer transfer = inflightTransfers.get(workflowInstanceKey);
+            return transfer == null ? null : transfer.getZeebeGeneration();
+        }
+    }
+
+    private Long getNextGeneration(Long workflowInstanceKey) {
+        // Only called when creating a new row (first event for this key in this run).
+        Transfer latestTransfer = transferRepository.findTopByWorkflowInstanceKeyOrderByZeebeGenerationDesc(workflowInstanceKey);
+        if (latestTransfer == null || latestTransfer.getZeebeGeneration() == null) {
+            return 0L;
+        }
+        return latestTransfer.getZeebeGeneration() + 1;
     }
 }

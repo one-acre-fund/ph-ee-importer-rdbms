@@ -65,6 +65,9 @@ public class Batch extends AbstractPersistableCustom<Long> {
     @Index(name = "idx_batches_key")
     private Long workflowInstanceKey;
 
+    @Column(name = "ZEEBE_GENERATION")
+    private Long zeebeGeneration;
+
     @Column(name = "STARTED_AT")
     private Date startedAt;
 
@@ -78,7 +81,12 @@ public class Batch extends AbstractPersistableCustom<Long> {
     }
 
     public Batch(Long workflowInstanceKey) {
+        this(workflowInstanceKey, 0L);
+    }
+
+    public Batch(Long workflowInstanceKey, Long zeebeGeneration) {
         this.workflowInstanceKey = workflowInstanceKey;
+        this.zeebeGeneration = zeebeGeneration;
     }
 
     public String getBatchId() {
@@ -175,6 +183,14 @@ public class Batch extends AbstractPersistableCustom<Long> {
 
     public void setWorkflowInstanceKey(Long workflowInstanceKey) {
         this.workflowInstanceKey = workflowInstanceKey;
+    }
+
+    public Long getZeebeGeneration() {
+        return zeebeGeneration;
+    }
+
+    public void setZeebeGeneration(Long zeebeGeneration) {
+        this.zeebeGeneration = zeebeGeneration;
     }
 
     public Date getStartedAt() {
