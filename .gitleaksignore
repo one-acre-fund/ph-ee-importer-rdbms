@@ -1,0 +1,3 @@
+# AWS key pair committed upstream in 2022 and replaced by placeholders in "Security fix (#29)".
+# It stays in history, so gitleaks would flag every run.
+4ef188c744447f648ee50b4f151e9490347c8cbf:src/main/resources/application.yml:aws-access-token:40

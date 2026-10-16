@@ -1,4 +1,4 @@
-Release Notes
+# Release Notes
 
 ## Version 1.2.0 - Up to date with Mifos Version 1.0.0-SNAPSHOT
     *  Horizontal scaling
