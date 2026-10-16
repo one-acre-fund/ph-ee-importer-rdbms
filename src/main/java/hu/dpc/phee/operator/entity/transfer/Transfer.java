@@ -35,7 +35,7 @@ public class Transfer extends AbstractPersistableCustom<Long> implements Generat
     @Column(name = "TRANSACTION_ID")
     private String transactionId;
 
-    // Row identity for the unique key, a MySQL generated column (db/FD-1931-unique-keys.sql):
+    // Row identity for the unique key, a MySQL generated column (operations app Flyway migration V53):
     // the transaction id once known, '' for an ordinary transfer that has none yet, NULL for a
     // batch CSV row without a request id. MySQL lets any number of NULLs through a unique index,
     // so without it two consumers could insert the same ordinary transfer before its id arrives.

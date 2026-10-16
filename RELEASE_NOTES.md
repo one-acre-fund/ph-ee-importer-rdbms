@@ -7,14 +7,14 @@
           caches are cleared on rebalance; database errors are retried instead of committed
           past; batch CSV rows are not re-inserted on replay; a redelivered record for a
           completed instance reuses its row instead of opening a new generation; unique
-          keys per (instance, generation) with db/FD-1931-unique-keys.sql for existing schemas;
+          keys per (instance, generation), applied to existing schemas by the operations app Flyway migration V53 (tenant) and V6 (core), which must run before this image starts;
           a database error is retried without limit (the partition stalls, lag grows) instead
           of the record being skipped after ten attempts; transfers, transaction requests and
           batches carry an optimistic lock (VERSION column) so a stale copy held by another
           replica cannot overwrite newer values
         * [FD-1931] - Review follow-ups: routing state no longer lives only in one pod's memory.
           Process definition to bpmnProcessId mappings from DEPLOYMENT records are stored in
-          tenants.process_definitions (db/FD-1931-tenants-db.sql) and a record that still cannot
+          tenants.process_definitions (operations app core migration V6) and a record that still cannot
           be routed is retried instead of being parked in memory and committed; call-activity
           child to parent links are stored in call_activity_links; batch completion falls back
           to the batch row's REQUEST_FILE and BATCH_ID when the variables were consumed by another
