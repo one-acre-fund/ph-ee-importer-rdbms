@@ -9,6 +9,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataAccessException;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.listener.ConsumerSeekAware;
 import org.springframework.stereotype.Component;
@@ -100,10 +101,25 @@ public class KafkaConsumer implements ConsumerSeekAware {
                     .thenComparing(ZeebeRecordReader::readTimestamp, Comparator.nullsLast(Long::compareTo)));
 
             logger.debug("Start processing of {} documents.", documents.size());
-            for (DocumentContext doc : documents) {
-                processDocument(doc, bpmnprocessId, processDefinitionKey);
+            for (int i = 0; i < documents.size(); i++) {
+                try {
+                    processDocument(documents.get(i), bpmnprocessId, processDefinitionKey);
+                } catch (DataAccessException ex) {
+                    // Put back the stored documents we did not get to; Kafka redelivers the incoming one.
+                    for (DocumentContext remaining : documents.subList(i, documents.size())) {
+                        if (remaining != incomingRecord) {
+                            tempDocumentStore.storeDocument(processDefinitionKey, remaining);
+                        }
+                    }
+                    throw ex;
+                }
             }
             logger.debug("Total Time 1 {}", (System.currentTimeMillis() - startTime));
+        } catch (DataAccessException ex) {
+            // Database trouble: drop cached entities and let the container re-poll this record.
+            logger.error("database error while processing zeebe event, record will be retried: {}", ex.getMessage());
+            recordParser.clearInflightState();
+            throw ex;
         } catch (Exception ex) {
             logger.error("Could not parse zeebe event:\n{}\nerror: {}\ntrace: {}",
                     rawData,
@@ -134,6 +150,7 @@ public class KafkaConsumer implements ConsumerSeekAware {
         String valueType = null;
         try {
             valueType = doc.read("$.valueType", String.class);
+            ThreadLocalContextUtil.setRecordTimestamp(ZeebeRecordReader.readTimestamp(doc));
             logger.info("Processing document of type {}", valueType);
             switch (valueType) {
                 case "VARIABLE":
@@ -160,6 +177,8 @@ public class KafkaConsumer implements ConsumerSeekAware {
                     logger.debug("Skipping unsupported valueType {}", valueType);
                     break;
             }
+        } catch (DataAccessException ex) {
+            throw ex;
         } catch (Exception ex) {
             logger.error("Failed to process document:\n{}\nof valueType:\n{}\nerror: {}\ntrace: {}",
                     doc.jsonString(),

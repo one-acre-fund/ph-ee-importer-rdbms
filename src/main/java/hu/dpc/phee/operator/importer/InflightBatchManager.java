@@ -2,6 +2,7 @@ package hu.dpc.phee.operator.importer;
 
 import hu.dpc.phee.operator.entity.batch.Batch;
 import hu.dpc.phee.operator.entity.batch.BatchRepository;
+import hu.dpc.phee.operator.entity.tenant.ThreadLocalContextUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -24,7 +25,7 @@ public class InflightBatchManager {
         Batch batch = getOrCreateBatch(workflowInstanceKey);
         if (batch.getStartedAt() == null) {
             batch.setStartedAt(new Date(timestamp));
-            batchRepository.save(batch);
+            save(batch);
             logger.debug("saving batch {}", batch.getWorkflowInstanceKey());
         } else {
             logger.debug("batch {} already started at {}", workflowInstanceKey, batch.getStartedAt());
@@ -44,7 +45,7 @@ public class InflightBatchManager {
             }
 
             batch.setCompletedAt(new Date(timestamp));
-            batchRepository.save(batch);
+            save(batch);
             logger.debug("batch {} finished", batch.getWorkflowInstanceKey());
         }
     }
@@ -54,6 +55,9 @@ public class InflightBatchManager {
             Batch batch = inflightBatches.get(workflowInstanceKey);
             if (batch == null) {
                 batch = batchRepository.findFirstByWorkflowInstanceKeyAndCompletedAtIsNullOrderByIdDesc(workflowInstanceKey);
+                if (batch == null) {
+                    batch = redeliveredBatch(workflowInstanceKey);
+                }
                 if (batch == null) {
                     Long nextGeneration = getNextGeneration(workflowInstanceKey);
                     batch = new Batch(workflowInstanceKey, nextGeneration);
@@ -67,6 +71,31 @@ public class InflightBatchManager {
         }
     }
 
+
+    /**
+     * Persists the entity and keeps the managed copy in the cache. EclipseLink's merge leaves the
+     * passed object's version untouched, so saving the same instance twice would fail the
+     * optimistic lock on the second save.
+     */
+    public Batch save(Batch entity) {
+        Batch saved = batchRepository.save(entity);
+        if (saved != null) {
+            synchronized (inflightBatches) {
+                if (inflightBatches.get(entity.getWorkflowInstanceKey()) == entity) {
+                    inflightBatches.put(entity.getWorkflowInstanceKey(), saved);
+                }
+            }
+            return saved;
+        }
+        return entity;
+    }
+
+    public void clear() {
+        synchronized (inflightBatches) {
+            inflightBatches.clear();
+        }
+    }
+
     /**
      * Memory-only lookup. Used on the hot path so child events do not query the DB
      * after the process row is already inflight.
@@ -76,6 +105,25 @@ public class InflightBatchManager {
             Batch batch = inflightBatches.get(workflowInstanceKey);
             return batch == null ? null : batch.getZeebeGeneration();
         }
+    }
+
+    /**
+     * A record whose Zeebe timestamp is not after the completion of the latest generation is a
+     * redelivery (Kafka at-least-once), not a new process instance reusing the key. Reuse that row
+     * instead of opening a new generation.
+     */
+    private Batch redeliveredBatch(Long workflowInstanceKey) {
+        Long recordTimestamp = ThreadLocalContextUtil.getRecordTimestamp();
+        if (recordTimestamp == null) {
+            return null;
+        }
+        Batch latest = batchRepository.findTopByWorkflowInstanceKeyOrderByZeebeGenerationDesc(workflowInstanceKey);
+        // COMPLETED_AT is a DATETIME with second precision (MySQL rounds the milliseconds), so compare whole seconds.
+        if (latest != null && latest.getCompletedAt() != null && recordTimestamp / 1000 <= latest.getCompletedAt().getTime() / 1000) {
+            logger.info("record for completed batch {} generation {} redelivered, reusing row", workflowInstanceKey, latest.getZeebeGeneration());
+            return latest;
+        }
+        return null;
     }
 
     private Long getNextGeneration(Long workflowInstanceKey) {

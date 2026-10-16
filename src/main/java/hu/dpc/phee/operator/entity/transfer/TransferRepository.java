@@ -13,4 +13,6 @@ public interface TransferRepository extends JpaRepository<Transfer, Long>, JpaSp
 
     Transfer findByWorkflowInstanceKeyAndZeebeGeneration(Long workflowInstanceKey, Long zeebeGeneration);
 
+    boolean existsByWorkflowInstanceKeyAndZeebeGenerationAndTransactionId(Long workflowInstanceKey, Long zeebeGeneration, String transactionId);
+
 }

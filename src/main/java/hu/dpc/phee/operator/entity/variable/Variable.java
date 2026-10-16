@@ -9,9 +9,10 @@ import javax.persistence.Column;
 import javax.persistence.Entity;
 import javax.persistence.Lob;
 import javax.persistence.Table;
+import javax.persistence.UniqueConstraint;
 
 @Entity
-@Table(name = "variables")
+@Table(name = "variables", uniqueConstraints = @UniqueConstraint(name = "uk_variables_instance_generation_name_timestamp", columnNames = {"WORKFLOW_INSTANCE_KEY", "ZEEBE_GENERATION", "NAME", "TIMESTAMP"}))
 @Cacheable(false)
 public class Variable extends AbstractPersistableCustom<Long> {
 
