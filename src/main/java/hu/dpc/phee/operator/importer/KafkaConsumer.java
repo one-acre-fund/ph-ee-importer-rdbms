@@ -72,10 +72,11 @@ public class KafkaConsumer implements ConsumerSeekAware {
                     logger.warn("Record with key {} has no processDefinitionKey, skip processing", recordKey);
                     return;
                 }
-                tempDocumentStore.storeDocument(processDefinitionKey, incomingRecord);
-                logger.info("Record with key {} processDefinitionKey {} has no associated bpmn, stored temporarily",
-                        recordKey, processDefinitionKey);
-                return;
+                // The mapping comes from a DEPLOYMENT record that another replica may own. Keeping
+                // the record only in memory and committing its offset would lose it with the pod, so
+                // hold the partition until the mapping shows up in process_definitions.
+                throw new RetryableRecordException("record " + recordKey + " has no bpmnProcessId and process definition "
+                        + processDefinitionKey + " is not registered yet");
             }
 
             tempDocumentStore.setBpmnprocessId(processDefinitionKey, bpmnprocessIdWithTenant);
@@ -115,6 +116,9 @@ public class KafkaConsumer implements ConsumerSeekAware {
                 }
             }
             logger.debug("Total Time 1 {}", (System.currentTimeMillis() - startTime));
+        } catch (RetryableRecordException ex) {
+            logger.error("zeebe event cannot be processed yet, record will be retried: {}", ex.getMessage());
+            throw ex;
         } catch (DataAccessException ex) {
             // Database trouble: drop cached entities and let the container re-poll this record.
             logger.error("database error while processing zeebe event, record will be retried: {}", ex.getMessage());
@@ -154,10 +158,7 @@ public class KafkaConsumer implements ConsumerSeekAware {
             logger.info("Processing document of type {}", valueType);
             switch (valueType) {
                 case "VARIABLE":
-                    DocumentContext processedVariable = recordParser.processVariable(doc, bpmnprocessId);
-                    if (processedVariable != null) {
-                        recordParser.addVariableToEntity(processedVariable, bpmnprocessId);
-                    }
+                    recordParser.importVariable(doc, bpmnprocessId);
                     break;
                 case "JOB":
                     recordParser.processTask(doc, bpmnprocessId);

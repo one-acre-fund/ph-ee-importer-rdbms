@@ -3,6 +3,7 @@ package hu.dpc.phee.operator.importer;
 import com.jayway.jsonpath.DocumentContext;
 import hu.dpc.phee.operator.config.BpmnProcess;
 import hu.dpc.phee.operator.config.BpmnProcessProperties;
+import hu.dpc.phee.operator.entity.callactivity.CallActivityLinkRepository;
 import hu.dpc.phee.operator.entity.transfer.Transfer;
 import hu.dpc.phee.operator.entity.transfer.TransferRepository;
 import hu.dpc.phee.operator.entity.transfer.TransferStatus;
@@ -39,6 +40,8 @@ public class RecordParserTimestampTest {
     private InflightTransferManager inflightTransferManager;
     @Mock
     private VariableParser variableParser;
+    @Mock
+    private CallActivityLinkRepository callActivityLinkRepository;
 
     @InjectMocks
     private RecordParser recordParser;

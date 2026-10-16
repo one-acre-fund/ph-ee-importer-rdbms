@@ -1,6 +1,7 @@
 package hu.dpc.phee.operator.entity.batch;
 
 import hu.dpc.phee.operator.entity.parent.AbstractPersistableCustom;
+import hu.dpc.phee.operator.entity.parent.GenerationRow;
 import org.eclipse.persistence.annotations.Index;
 
 import javax.persistence.Column;
@@ -13,7 +14,7 @@ import java.util.Date;
 
 @Entity
 @Table(name = "batches", uniqueConstraints = @UniqueConstraint(name = "uk_batches_instance_generation", columnNames = {"WORKFLOW_INSTANCE_KEY", "ZEEBE_GENERATION"}))
-public class Batch extends AbstractPersistableCustom<Long> {
+public class Batch extends AbstractPersistableCustom<Long> implements GenerationRow {
 
     // Optimistic lock. The EclipseLink shared cache is off, so saving a detached entity merges
     // every field over the current row. A stale copy held by another pod (a fenced consumer still

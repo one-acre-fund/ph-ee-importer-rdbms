@@ -11,6 +11,8 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnitRunner;
 
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.Date;
 
 import static org.junit.Assert.assertEquals;
@@ -196,7 +198,7 @@ public class InflightTransferManagerTest {
     public void redeliveredRecordForCompletedTransferReusesLatestGeneration() {
         Transfer completed = new Transfer(KEY, 2L);
         completed.setCompletedAt(new Date(5_000L));
-        when(transferRepository.findTopByWorkflowInstanceKeyOrderByZeebeGenerationDesc(KEY)).thenReturn(completed);
+        when(transferRepository.findByWorkflowInstanceKeyOrderByZeebeGenerationAsc(KEY)).thenReturn(Collections.singletonList(completed));
         ThreadLocalContextUtil.setRecordTimestamp(4_000L);
 
         assertSame(completed, inflightTransferManager.getOrCreateTransfer(KEY));
@@ -206,6 +208,7 @@ public class InflightTransferManagerTest {
     public void recordAfterCompletionOpensNewGeneration() {
         Transfer completed = new Transfer(KEY, 2L);
         completed.setCompletedAt(new Date(5_000L));
+        when(transferRepository.findByWorkflowInstanceKeyOrderByZeebeGenerationAsc(KEY)).thenReturn(Collections.singletonList(completed));
         when(transferRepository.findTopByWorkflowInstanceKeyOrderByZeebeGenerationDesc(KEY)).thenReturn(completed);
         ThreadLocalContextUtil.setRecordTimestamp(6_000L);
 
@@ -219,9 +222,25 @@ public class InflightTransferManagerTest {
         // completedAt comes back from MySQL rounded to the second; the record keeps its milliseconds
         Transfer completed = new Transfer(KEY, 0L);
         completed.setCompletedAt(new Date(5_000L));
-        when(transferRepository.findTopByWorkflowInstanceKeyOrderByZeebeGenerationDesc(KEY)).thenReturn(completed);
+        when(transferRepository.findByWorkflowInstanceKeyOrderByZeebeGenerationAsc(KEY)).thenReturn(Collections.singletonList(completed));
         ThreadLocalContextUtil.setRecordTimestamp(5_900L);
 
         assertSame(completed, inflightTransferManager.getOrCreateTransfer(KEY));
+    }
+
+    @Test
+    public void replayedRecordOfOlderGenerationReusesThatGenerationNotTheLatest() {
+        Transfer first = new Transfer(KEY, 0L);
+        first.setCompletedAt(new Date(5_000L));
+        Transfer second = new Transfer(KEY, 1L);
+        second.setCompletedAt(new Date(9_000L));
+        when(transferRepository.findByWorkflowInstanceKeyOrderByZeebeGenerationAsc(KEY)).thenReturn(Arrays.asList(first, second));
+
+        ThreadLocalContextUtil.setRecordTimestamp(4_000L);
+        assertSame(first, inflightTransferManager.getOrCreateTransfer(KEY));
+
+        inflightTransferManager.clear();
+        ThreadLocalContextUtil.setRecordTimestamp(8_000L);
+        assertSame(second, inflightTransferManager.getOrCreateTransfer(KEY));
     }
 }

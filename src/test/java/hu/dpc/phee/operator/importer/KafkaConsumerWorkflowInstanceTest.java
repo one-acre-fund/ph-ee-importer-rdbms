@@ -12,6 +12,7 @@ import org.mockito.junit.MockitoJUnitRunner;
 
 import java.lang.reflect.Field;
 
+import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
@@ -85,7 +86,31 @@ public class KafkaConsumerWorkflowInstanceTest {
         kafkaConsumer.listen(activating);
 
         verify(recordParser).processWorkflowInstance(any(DocumentContext.class), eq("inbound_bancobu_fineract"));
-        verify(recordParser).processVariable(any(DocumentContext.class), eq("inbound_bancobu_fineract"));
+        verify(recordParser).importVariable(any(DocumentContext.class), eq("inbound_bancobu_fineract"));
+    }
+
+    @Test
+    public void unresolvedRecordIsRetriedInsteadOfBeingParkedInMemory() {
+        String variable = "{"
+                + "\"valueType\":\"VARIABLE\","
+                + "\"timestamp\":2,"
+                + "\"key\":2251799813793999,"
+                + "\"value\":{"
+                + "\"name\":\"transactionId\","
+                + "\"value\":\"\\\"abc\\\"\","
+                + "\"workflowKey\":" + PROCESS_DEFINITION_KEY + ","
+                + "\"workflowInstanceKey\":" + PROCESS_INSTANCE_KEY
+                + "}"
+                + "}";
+        when(deploymentRegistry.resolveBpmnProcessId(PROCESS_DEFINITION_KEY)).thenReturn(null);
+        try {
+            kafkaConsumer.listen(variable);
+            fail("expected the record to be retried");
+        } catch (RetryableRecordException expected) {
+            // the listener container re-polls the record until the mapping is in the database
+        }
+        verify(tempDocumentStore, never()).storeDocument(anyLong(), any(DocumentContext.class));
+        verify(recordParser, never()).importVariable(any(DocumentContext.class), any());
     }
 
     @Test
@@ -100,7 +125,7 @@ public class KafkaConsumerWorkflowInstanceTest {
 
         verify(deploymentRegistry).registerFromDeployment(any(DocumentContext.class));
         verify(recordParser, never()).processWorkflowInstance(any(DocumentContext.class), any());
-        verify(recordParser, never()).processVariable(any(DocumentContext.class), any());
+        verify(recordParser, never()).importVariable(any(DocumentContext.class), any());
         verify(repository, never()).findOneBySchemaName(any());
         verify(tempDocumentStore, never()).takeStoredDocuments(anyLong());
     }

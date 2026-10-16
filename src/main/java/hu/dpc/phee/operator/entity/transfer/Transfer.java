@@ -2,6 +2,7 @@ package hu.dpc.phee.operator.entity.transfer;
 
 
 import hu.dpc.phee.operator.entity.parent.AbstractPersistableCustom;
+import hu.dpc.phee.operator.entity.parent.GenerationRow;
 
 import javax.persistence.Column;
 import javax.persistence.Entity;
@@ -14,8 +15,8 @@ import java.math.BigDecimal;
 import java.util.Date;
 
 @Entity
-@Table(name = "transfers", uniqueConstraints = @UniqueConstraint(name = "uk_transfers_instance_generation_transaction", columnNames = {"WORKFLOW_INSTANCE_KEY", "ZEEBE_GENERATION", "TRANSACTION_ID"}))
-public class Transfer extends AbstractPersistableCustom<Long> {
+@Table(name = "transfers", uniqueConstraints = @UniqueConstraint(name = "uk_transfers_instance_generation_key", columnNames = {"WORKFLOW_INSTANCE_KEY", "ZEEBE_GENERATION", "TRANSFER_KEY"}))
+public class Transfer extends AbstractPersistableCustom<Long> implements GenerationRow {
 
     // Optimistic lock. The EclipseLink shared cache is off, so saving a detached entity merges
     // every field over the current row. A stale copy held by another pod (a fenced consumer still
@@ -33,6 +34,13 @@ public class Transfer extends AbstractPersistableCustom<Long> {
 
     @Column(name = "TRANSACTION_ID")
     private String transactionId;
+
+    // Row identity for the unique key, a MySQL generated column (db/FD-1931-unique-keys.sql):
+    // the transaction id once known, '' for an ordinary transfer that has none yet, NULL for a
+    // batch CSV row without a request id. MySQL lets any number of NULLs through a unique index,
+    // so without it two consumers could insert the same ordinary transfer before its id arrives.
+    @Column(name = "TRANSFER_KEY", insertable = false, updatable = false)
+    private String transferKey;
 
     @Column(name = "STARTED_AT")
     private Date startedAt;

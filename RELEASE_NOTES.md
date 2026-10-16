@@ -12,6 +12,17 @@
           of the record being skipped after ten attempts; transfers, transaction requests and
           batches carry an optimistic lock (VERSION column) so a stale copy held by another
           replica cannot overwrite newer values
+        * [FD-1931] - Review follow-ups: routing state no longer lives only in one pod's memory.
+          Process definition to bpmnProcessId mappings from DEPLOYMENT records are stored in
+          tenants.process_definitions (db/FD-1931-tenants-db.sql) and a record that still cannot
+          be routed is retried instead of being parked in memory and committed; call-activity
+          child to parent links are stored in call_activity_links; batch completion falls back
+          to the batch row's REQUEST_FILE and BATCH_ID when the variables were consumed by another
+          replica; a replayed record is matched to the generation that was running at its
+          timestamp instead of the latest one; the variable history row and the entity update
+          are written in one transaction; transfers get a generated TRANSFER_KEY column so an
+          ordinary transfer without a transaction id yet still has a unique identity; the
+          migration's duplicate cleanup uses null-safe equality on TRANSACTION_ID
 
 ## Version 1.1.1 - Up to date with Mifos Version 1.0.0-SNAPSHOT
     *  DB improvements

@@ -113,22 +113,21 @@ public class InflightTransactionRequestManager {
     }
 
     /**
-     * A record whose Zeebe timestamp is not after the completion of the latest generation is a
-     * redelivery (Kafka at-least-once), not a new process instance reusing the key. Reuse that row
-     * instead of opening a new generation.
+     * A record whose Zeebe timestamp is not after the latest completion is a redelivery (Kafka
+     * at-least-once), not a new process instance reusing the key. Reuse the row of the generation
+     * that was running at that time instead of opening a new one.
      */
     private TransactionRequest redeliveredTransactionRequest(Long workflowInstanceKey) {
         Long recordTimestamp = ThreadLocalContextUtil.getRecordTimestamp();
         if (recordTimestamp == null) {
             return null;
         }
-        TransactionRequest latest = transactionRequestRepository.findTopByWorkflowInstanceKeyOrderByZeebeGenerationDesc(workflowInstanceKey);
-        // COMPLETED_AT is a DATETIME with second precision (MySQL rounds the milliseconds), so compare whole seconds.
-        if (latest != null && latest.getCompletedAt() != null && recordTimestamp / 1000 <= latest.getCompletedAt().getTime() / 1000) {
-            logger.info("record for completed transactionRequest {} generation {} redelivered, reusing row", workflowInstanceKey, latest.getZeebeGeneration());
-            return latest;
+        TransactionRequest match = RedeliveryMatcher.match(
+                transactionRequestRepository.findByWorkflowInstanceKeyOrderByZeebeGenerationAsc(workflowInstanceKey), recordTimestamp);
+        if (match != null) {
+            logger.info("record for completed transactionRequest {} generation {} redelivered, reusing row", workflowInstanceKey, match.getZeebeGeneration());
         }
-        return null;
+        return match;
     }
 
     private Long getNextGeneration(Long workflowInstanceKey) {

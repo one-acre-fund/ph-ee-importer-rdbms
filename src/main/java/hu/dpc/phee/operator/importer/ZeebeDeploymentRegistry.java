@@ -1,8 +1,11 @@
 package hu.dpc.phee.operator.importer;
 
 import com.jayway.jsonpath.DocumentContext;
+import hu.dpc.phee.operator.entity.processdefinition.ProcessDefinition;
+import hu.dpc.phee.operator.entity.processdefinition.ProcessDefinitionRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -18,6 +21,10 @@ public class ZeebeDeploymentRegistry {
 
     private final Logger logger = LoggerFactory.getLogger(getClass());
     private final Map<Long, String> processDefinitionKeyToBpmn = new ConcurrentHashMap<>();
+
+    // Shared tenants database: the DEPLOYMENT record may be consumed by another replica.
+    @Autowired
+    private ProcessDefinitionRepository processDefinitionRepository;
 
     public void registerFromDeployment(DocumentContext deploymentRecord) {
         List<Map<String, Object>> deployedWorkflows = deploymentRecord.read("$.value.deployedWorkflows");
@@ -37,6 +44,7 @@ public class ZeebeDeploymentRegistry {
                 continue;
             }
             processDefinitionKeyToBpmn.put(processDefinitionKey, bpmnProcessId);
+            persist(processDefinitionKey, bpmnProcessId);
             logger.info("Registered deployment mapping {} -> {}", processDefinitionKey, bpmnProcessId);
         }
     }
@@ -45,7 +53,27 @@ public class ZeebeDeploymentRegistry {
         if (processDefinitionKey == null) {
             return null;
         }
-        return processDefinitionKeyToBpmn.get(processDefinitionKey);
+        String bpmnProcessId = processDefinitionKeyToBpmn.get(processDefinitionKey);
+        if (bpmnProcessId == null) {
+            ProcessDefinition stored = processDefinitionRepository.findByProcessDefinitionKey(processDefinitionKey);
+            if (stored != null) {
+                bpmnProcessId = stored.getBpmnProcessId();
+                processDefinitionKeyToBpmn.put(processDefinitionKey, bpmnProcessId);
+            }
+        }
+        return bpmnProcessId;
+    }
+
+    private void persist(Long processDefinitionKey, String bpmnProcessId) {
+        ProcessDefinition stored = processDefinitionRepository.findByProcessDefinitionKey(processDefinitionKey);
+        if (stored == null) {
+            stored = new ProcessDefinition(processDefinitionKey, bpmnProcessId);
+        } else if (bpmnProcessId.equals(stored.getBpmnProcessId())) {
+            return;
+        } else {
+            stored.setBpmnProcessId(bpmnProcessId);
+        }
+        processDefinitionRepository.save(stored);
     }
 
     private static Long toLong(Object value) {

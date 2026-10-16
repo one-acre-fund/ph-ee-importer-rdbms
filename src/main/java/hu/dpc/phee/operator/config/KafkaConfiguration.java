@@ -53,9 +53,10 @@ public class KafkaConfiguration {
         factory.setConcurrency(concurrency);
         factory.getContainerProperties().setPollTimeout(3000);
         // A record that failed on a database error is re-polled instead of being committed past.
-        // Only DataAccessException reaches this handler (KafkaConsumer logs and swallows the rest),
-        // so retrying without limit stalls the partition during a database outage instead of
-        // skipping records; the lag shows up on the KEDA scaler.
+        // Only DataAccessException and RetryableRecordException reach this handler (KafkaConsumer
+        // logs and swallows the rest), so retrying without limit stalls the partition during a
+        // database outage or while a routing mapping is missing instead of skipping records; the
+        // lag shows up on the KEDA scaler.
         factory.setErrorHandler(new SeekToCurrentErrorHandler(new FixedBackOff(1000L, FixedBackOff.UNLIMITED_ATTEMPTS)));
         // Entities cached in memory belong to the partitions this pod owns. Drop them when
         // partitions move so the next event re-reads the current row from the database.

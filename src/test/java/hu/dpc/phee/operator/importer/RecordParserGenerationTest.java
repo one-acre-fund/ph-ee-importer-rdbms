@@ -3,6 +3,11 @@ package hu.dpc.phee.operator.importer;
 import com.jayway.jsonpath.DocumentContext;
 import hu.dpc.phee.operator.config.BpmnProcess;
 import hu.dpc.phee.operator.config.BpmnProcessProperties;
+import hu.dpc.phee.operator.entity.batch.Batch;
+import hu.dpc.phee.operator.entity.batch.BatchRepository;
+import hu.dpc.phee.operator.entity.callactivity.CallActivityLink;
+import hu.dpc.phee.operator.entity.callactivity.CallActivityLinkRepository;
+import hu.dpc.phee.operator.file.FileTransferService;
 import hu.dpc.phee.operator.entity.task.Task;
 import hu.dpc.phee.operator.entity.task.TaskRepository;
 import hu.dpc.phee.operator.entity.variable.Variable;
@@ -24,6 +29,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -52,6 +58,14 @@ public class RecordParserGenerationTest {
     private InflightBatchManager inflightBatchManager;
     @Mock
     private WorkflowGenerationResolver workflowGenerationResolver;
+    @Mock
+    private CallActivityLinkRepository callActivityLinkRepository;
+    @Mock
+    private BatchRepository batchRepository;
+    @Mock
+    private FileTransferService fileTransferService;
+    @Mock
+    private TempDocumentStore tempDocumentStore;
 
     @InjectMocks
     private RecordParser recordParser;
@@ -256,6 +270,42 @@ public class RecordParserGenerationTest {
 
         verify(inflightTransferManager).transferStarted(PARENT_KEY, TS, "OUTGOING");
         assertEquals(PARENT_KEY, callActivities().get(childKey));
+
+        ArgumentCaptor<CallActivityLink> link = ArgumentCaptor.forClass(CallActivityLink.class);
+        verify(callActivityLinkRepository).save(link.capture());
+        assertEquals(childKey, link.getValue().getChildInstanceKey());
+        assertEquals(PARENT_KEY, link.getValue().getParentInstanceKey());
+    }
+
+    @Test
+    public void childVariableFindsItsParentFromThePersistedLinkWhenTheMapIsEmpty() {
+        when(callActivityLinkRepository.findByChildInstanceKey(KEY)).thenReturn(new CallActivityLink(KEY, PARENT_KEY));
+        when(workflowGenerationResolver.ensureGeneration("PayerFundTransfer", PARENT_KEY)).thenReturn(5L);
+        when(variableRepository.findByWorkflowInstanceKeyAndZeebeGeneration(KEY, 5L)).thenReturn(Collections.emptyList());
+
+        recordParser.processVariable(variableJson(KEY, "amount", TS), "PayerFundTransfer");
+
+        verify(workflowGenerationResolver).ensureGeneration("PayerFundTransfer", PARENT_KEY);
+    }
+
+    @Test
+    public void batchCompletionReadsTheFileNameFromTheBatchRowWhenTheTempStoreMisses() {
+        BpmnProcess process = new BpmnProcess();
+        process.setId("csv_batch");
+        process.setType("BATCH");
+        process.setDirection("UNKNOWN");
+        when(bpmnProcessProperties.getById("csv_batch")).thenReturn(process);
+        Batch batch = new Batch(KEY, 0L);
+        batch.setRequestFile("batch-42.csv");
+        when(batchRepository.findFirstByWorkflowInstanceKeyAndCompletedAtIsNullOrderByIdDesc(KEY)).thenReturn(batch);
+        when(tempDocumentStore.getBatchFileName(KEY)).thenReturn(null);
+        // the download "succeeds" but the local file does not exist, so the import stops after the file lookup
+        when(fileTransferService.downloadFile(any(), any())).thenReturn("/nonexistent/batch-42.csv");
+
+        recordParser.processWorkflowInstance(processJson(KEY, "csv_batch-tn01", "ELEMENT_COMPLETED", -1L));
+
+        verify(fileTransferService).downloadFile(eq("batch-42.csv"), any());
+        verify(inflightBatchManager).batchEnded(KEY, TS);
     }
 
     private static DocumentContext variableJson(Long key, String name, long timestamp) {

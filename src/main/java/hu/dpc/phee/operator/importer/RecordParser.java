@@ -7,6 +7,8 @@ import com.jayway.jsonpath.DocumentContext;
 import hu.dpc.phee.operator.config.BpmnProcess;
 import hu.dpc.phee.operator.config.BpmnProcessProperties;
 import hu.dpc.phee.operator.entity.batch.Batch;
+import hu.dpc.phee.operator.entity.callactivity.CallActivityLink;
+import hu.dpc.phee.operator.entity.callactivity.CallActivityLinkRepository;
 import hu.dpc.phee.operator.entity.batch.BatchRepository;
 import hu.dpc.phee.operator.entity.batch.Transaction;
 import hu.dpc.phee.operator.entity.task.Task;
@@ -28,6 +30,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.util.Pair;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.io.FileReader;
 import java.io.IOException;
@@ -92,6 +95,8 @@ public class RecordParser {
 
     @Autowired
     private TempDocumentStore tempDocumentStore;
+    @Autowired
+    private CallActivityLinkRepository callActivityLinkRepository;
 
     @Autowired
     private FileTransferService fileTransferService;
@@ -116,6 +121,19 @@ public class RecordParser {
         inflightBatchManager.clear();
     }
 
+    /**
+     * History row and entity update in one tenant transaction. Written separately, a failed entity
+     * save after the variable insert would make the redelivered record look already processed and
+     * the entity update would be skipped for good.
+     */
+    @Transactional
+    public void importVariable(DocumentContext json, String bpmnProcessId) {
+        DocumentContext processed = processVariable(json, bpmnProcessId);
+        if (processed != null) {
+            addVariableToEntity(processed, bpmnProcessId);
+        }
+    }
+
     public void addVariableToEntity(DocumentContext newVariable, String bpmnProcessId) {
 
         if (newVariable == null) {
@@ -124,8 +142,8 @@ public class RecordParser {
         logger.debug("newVariable in RecordParser: {}", newVariable.jsonString()); //
         String name = newVariable.read("$.value.name");
         Long workflowInstanceKey = ZeebeRecordReader.readProcessInstanceKey(newVariable);
-        if (inflightCallActivities.containsKey(workflowInstanceKey)) {
-            Long parentInstanceKey = inflightCallActivities.get(workflowInstanceKey);
+        Long parentInstanceKey = parentInstanceKey(workflowInstanceKey);
+        if (parentInstanceKey != null) {
             logger.debug("variable {} in instance {} has parent workflowInstance {}", name, workflowInstanceKey, parentInstanceKey);
             workflowInstanceKey = parentInstanceKey;
         }
@@ -183,10 +201,7 @@ public class RecordParser {
 
     public DocumentContext processVariable(DocumentContext json, String bpmnProcessId) {
         Long workflowInstanceKey = ZeebeRecordReader.readProcessInstanceKey(json);
-        Long generationKey = workflowInstanceKey;
-        if (inflightCallActivities.containsKey(workflowInstanceKey)) {
-            generationKey = inflightCallActivities.get(workflowInstanceKey);
-        }
+        Long generationKey = generationKey(workflowInstanceKey);
         String name = json.read("$.value.name");
         Long newTimestamp = ZeebeRecordReader.readTimestamp(json);
         Long zeebeGeneration = workflowGenerationResolver.ensureGeneration(bpmnProcessId, generationKey);
@@ -234,15 +249,16 @@ public class RecordParser {
             if ("ELEMENT_ACTIVATING".equals(intent)) {
                 if (hasParent) {
                     logger.info("Sub process {} with key {} started from parent instance {}", bpmnProcessBaseId, callActivityKey, parentWorkflowInstanceKey);
-                    inflightCallActivities.put(callActivityKey, parentWorkflowInstanceKey);
+                    rememberCallActivity(callActivityKey, parentWorkflowInstanceKey);
                     inflightTransferManager.transferStarted(parentWorkflowInstanceKey, timestamp, outgoingDirection);
                 } else {
                     logger.info("Transfer process {} started for instance {}", bpmnProcessBaseId, workflowInstanceKey);
                     inflightTransferManager.transferStarted(workflowInstanceKey, timestamp, bpmnProcess.getDirection());
                 }
             } else if ("ELEMENT_COMPLETED".equals(intent)) {
-                if (inflightCallActivities.containsKey(workflowInstanceKey)) {
-                    Long parentInstanceKey = inflightCallActivities.remove(workflowInstanceKey);
+                Long parentInstanceKey = parentInstanceKey(workflowInstanceKey);
+                if (parentInstanceKey != null) {
+                    inflightCallActivities.remove(workflowInstanceKey);
                     logger.info("Sub process {} with key {} ended from parent instance {}", bpmnProcessBaseId, callActivityKey, parentInstanceKey);
                     workflowInstanceKey = parentInstanceKey;
                 }
@@ -280,10 +296,7 @@ public class RecordParser {
         }
 
         Long workflowInstanceKey = ZeebeRecordReader.readProcessInstanceKey(json);
-        Long generationKey = workflowInstanceKey;
-        if (inflightCallActivities.containsKey(workflowInstanceKey)) {
-            generationKey = inflightCallActivities.get(workflowInstanceKey);
-        }
+        Long generationKey = generationKey(workflowInstanceKey);
         String newElementId = json.read("$.value.elementId");
         Long newTimestamp = ZeebeRecordReader.readTimestamp(json);
         String newIntent = json.read("$.intent");
@@ -322,7 +335,16 @@ public class RecordParser {
 
     // reads data from csv file and write data to transfers table
     private void updateTransferTableForBatch(Long workflowInstanceKey, Long completeTimestamp) {
+        // The completion event can reach a replica that never saw the filename and batchId
+        // variables, so fall back to the batch row those variables were written to.
+        Batch batch = batchRepository.findFirstByWorkflowInstanceKeyAndCompletedAtIsNullOrderByIdDesc(workflowInstanceKey);
+        if (batch == null) {
+            batch = batchRepository.findTopByWorkflowInstanceKeyOrderByZeebeGenerationDesc(workflowInstanceKey);
+        }
         String filename = tempDocumentStore.getBatchFileName(workflowInstanceKey);
+        if (filename == null && batch != null) {
+            filename = batch.getRequestFile();
+        }
         logger.info("Filename {}", filename);
         if (filename == null) {
             return;
@@ -349,10 +371,6 @@ public class RecordParser {
             return;
         }
 
-        Batch batch = batchRepository.findFirstByWorkflowInstanceKeyAndCompletedAtIsNullOrderByIdDesc(workflowInstanceKey);
-        if (batch == null) {
-            batch = batchRepository.findTopByWorkflowInstanceKeyOrderByZeebeGenerationDesc(workflowInstanceKey);
-        }
         if (batch == null) {
             logger.error("No batch found for workflow instance key {}, skip transfer update", workflowInstanceKey);
             return;
@@ -367,7 +385,8 @@ public class RecordParser {
             Transfer transfer = BatchFormatToTransferMapper.mapToTransferEntity(transaction);
             transfer.setWorkflowInstanceKey(workflowInstanceKey);
             transfer.setZeebeGeneration(batch.getZeebeGeneration());
-            transfer.setBatchId(strip(tempDocumentStore.getBatchId(workflowInstanceKey)));
+            String batchId = tempDocumentStore.getBatchId(workflowInstanceKey);
+            transfer.setBatchId(batchId == null ? batch.getBatchId() : strip(batchId));
             transfer.setCompletedAt(new Date(completeTimestamp));
             transfer.setTransactionId(transaction.getRequestId());
 
@@ -388,6 +407,37 @@ public class RecordParser {
 
     public void processWorkflowInstance(DocumentContext json) {
         processWorkflowInstance(json, ZeebeRecordReader.resolveBpmnProcessBaseId(json, null));
+    }
+
+    /** Generation lookups of a call-activity child use the parent transfer's key. */
+    private Long generationKey(Long workflowInstanceKey) {
+        Long parentInstanceKey = parentInstanceKey(workflowInstanceKey);
+        return parentInstanceKey == null ? workflowInstanceKey : parentInstanceKey;
+    }
+
+    /**
+     * Parent transfer instance of a call-activity child, or null for a root instance. The map is
+     * only a cache: the link is persisted when the child activates, because its variables may be
+     * processed after a rebalance, a cache clear or by another replica. One indexed lookup per
+     * record on a cache miss; a negative cache would save it if that ever shows in profiles.
+     */
+    private Long parentInstanceKey(Long workflowInstanceKey) {
+        Long parentInstanceKey = inflightCallActivities.get(workflowInstanceKey);
+        if (parentInstanceKey == null) {
+            CallActivityLink link = callActivityLinkRepository.findByChildInstanceKey(workflowInstanceKey);
+            if (link != null) {
+                parentInstanceKey = link.getParentInstanceKey();
+                inflightCallActivities.put(workflowInstanceKey, parentInstanceKey);
+            }
+        }
+        return parentInstanceKey;
+    }
+
+    private void rememberCallActivity(Long childInstanceKey, Long parentInstanceKey) {
+        inflightCallActivities.put(childInstanceKey, parentInstanceKey);
+        if (callActivityLinkRepository.findByChildInstanceKey(childInstanceKey) == null) {
+            callActivityLinkRepository.save(new CallActivityLink(childInstanceKey, parentInstanceKey));
+        }
     }
 
     private void touchEntityStartedAt(Long workflowInstanceKey, String bpmnProcessId, DocumentContext event) {

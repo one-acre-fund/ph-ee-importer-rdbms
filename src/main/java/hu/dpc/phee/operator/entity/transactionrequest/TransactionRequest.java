@@ -2,6 +2,7 @@ package hu.dpc.phee.operator.entity.transactionrequest;
 
 
 import hu.dpc.phee.operator.entity.parent.AbstractPersistableCustom;
+import hu.dpc.phee.operator.entity.parent.GenerationRow;
 
 import javax.persistence.Column;
 import javax.persistence.Entity;
@@ -17,7 +18,7 @@ import static hu.dpc.phee.operator.entity.transactionrequest.TransactionRequestS
 
 @Entity
 @Table(name = "transaction_requests", uniqueConstraints = @UniqueConstraint(name = "uk_transaction_requests_instance_generation", columnNames = {"WORKFLOW_INSTANCE_KEY", "ZEEBE_GENERATION"}))
-public class TransactionRequest extends AbstractPersistableCustom<Long> {
+public class TransactionRequest extends AbstractPersistableCustom<Long> implements GenerationRow {
 
     // Optimistic lock. The EclipseLink shared cache is off, so saving a detached entity merges
     // every field over the current row. A stale copy held by another pod (a fenced consumer still
