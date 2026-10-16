@@ -43,6 +43,15 @@ public class KafkaConfiguration {
     @Value("${kafka.concurrency}")
     private int concurrency;
 
+    @Value("${kafka.poll-timeout-ms:3000}")
+    private long pollTimeoutMs;
+
+    @Value("${kafka.retry-backoff-ms:1000}")
+    private long retryBackoffMs;
+
+    @Value("${kafka.auto-offset-reset:earliest}")
+    private String autoOffsetReset;
+
     @Autowired
     private RecordParser recordParser;
 
@@ -51,13 +60,13 @@ public class KafkaConfiguration {
         ConcurrentKafkaListenerContainerFactory<String, String> factory = new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(consumerFactory());
         factory.setConcurrency(concurrency);
-        factory.getContainerProperties().setPollTimeout(3000);
+        factory.getContainerProperties().setPollTimeout(pollTimeoutMs);
         // A record that failed on a database error is re-polled instead of being committed past.
         // Only DataAccessException and RetryableRecordException reach this handler (KafkaConsumer
         // logs and swallows the rest), so retrying without limit stalls the partition during a
         // database outage or while a routing mapping is missing instead of skipping records; the
         // lag shows up on the KEDA scaler.
-        factory.setErrorHandler(new SeekToCurrentErrorHandler(new FixedBackOff(1000L, FixedBackOff.UNLIMITED_ATTEMPTS)));
+        factory.setErrorHandler(new SeekToCurrentErrorHandler(new FixedBackOff(retryBackoffMs, FixedBackOff.UNLIMITED_ATTEMPTS)));
         // Entities cached in memory belong to the partitions this pod owns. Drop them when
         // partitions move so the next event re-reads the current row from the database.
         factory.getContainerProperties().setConsumerRebalanceListener(new ConsumerAwareRebalanceListener() {
@@ -83,6 +92,9 @@ public class KafkaConfiguration {
         properties.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaBrokers);
         properties.put(ConsumerConfig.CLIENT_ID_CONFIG, hostname);
         properties.put(ConsumerConfig.GROUP_ID_CONFIG, consumerGroup);
+        // A group without committed offsets (first deploy of the fixed group id) starts at the
+        // beginning of the retained topic rather than skipping the backlog; writes are idempotent.
+        properties.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, autoOffsetReset);
         properties.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         properties.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         logger.info("using Kafka consumer group {} with {} consumer threads", consumerGroup, concurrency);
