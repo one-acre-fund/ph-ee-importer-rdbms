@@ -104,6 +104,18 @@ public class RecordParser {
 
     private final Map<Long, Long> inflightCallActivities = new ConcurrentHashMap<>();
 
+    /**
+     * Drops every in-memory entity cache. Called when Kafka partitions are revoked and after a
+     * failed database write, so the next event re-reads the current rows instead of writing a
+     * stale cached copy over what another replica stored.
+     */
+    public void clearInflightState() {
+        inflightCallActivities.clear();
+        inflightTransferManager.clear();
+        inflightTransactionRequestManager.clear();
+        inflightBatchManager.clear();
+    }
+
     public void addVariableToEntity(DocumentContext newVariable, String bpmnProcessId) {
 
         if (newVariable == null) {
@@ -127,7 +139,7 @@ public class RecordParser {
                 Transfer transfer = inflightTransferManager.getOrCreateTransfer(workflowInstanceKey);
                 variableParser.getTransferParsers().get(name).accept(Pair.of(transfer, value));
                 applyTransferTimestamps(transfer, newVariable);
-                transferRepository.save(transfer);
+                inflightTransferManager.save(transfer);
             }
         } else if (transactionRequestType.equals(bpmnProcess.getType())) {
             if (variableParser.getTransactionRequestParsers().containsKey(name)) {
@@ -140,7 +152,7 @@ public class RecordParser {
                     transactionRequest.setDirection(bpmnProcess.getDirection());
                 }
                 applyTransactionRequestTimestamps(transactionRequest, newVariable);
-                transactionRequestRepository.save(transactionRequest);
+                inflightTransactionRequestManager.save(transactionRequest);
             }
         } else if (batchType.equals(bpmnProcess.getType())) {
             if (variableParser.getBatchParsers().containsKey(name)) {
@@ -149,7 +161,7 @@ public class RecordParser {
 
                 Batch batch = inflightBatchManager.getOrCreateBatch(workflowInstanceKey);
                 variableParser.getBatchParsers().get(name).accept(Pair.of(batch, value));
-                batchRepository.save(batch);
+                inflightBatchManager.save(batch);
 
                 if (!bpmnProcess.getId().equalsIgnoreCase("bulk_processor")) {
                     logger.info("Inside if condition {}", name);
@@ -346,6 +358,12 @@ public class RecordParser {
             return;
         }
         for (Transaction transaction: transactionList) {
+            // The completion event can be delivered more than once (at-least-once); do not re-insert rows.
+            if (transferRepository.existsByWorkflowInstanceKeyAndZeebeGenerationAndTransactionId(
+                    workflowInstanceKey, batch.getZeebeGeneration(), transaction.getRequestId())) {
+                logger.info("transfer {} of batch instance {} already imported, skipping", transaction.getRequestId(), workflowInstanceKey);
+                continue;
+            }
             Transfer transfer = BatchFormatToTransferMapper.mapToTransferEntity(transaction);
             transfer.setWorkflowInstanceKey(workflowInstanceKey);
             transfer.setZeebeGeneration(batch.getZeebeGeneration());
@@ -363,7 +381,7 @@ public class RecordParser {
 
             BatchFormatToTransferMapper.updateTransferUsingBatchDetails(transfer, batch);
 
-            transferRepository.save(transfer);
+            inflightTransferManager.save(transfer);
         }
 
     }
@@ -385,19 +403,19 @@ public class RecordParser {
             Transfer transfer = inflightTransferManager.getOrCreateTransfer(workflowInstanceKey);
             if (transfer != null && transfer.getStartedAt() == null) {
                 transfer.setStartedAt(eventTime);
-                transferRepository.save(transfer);
+                inflightTransferManager.save(transfer);
             }
         } else if (transactionRequestType.equals(bpmnProcess.getType())) {
             TransactionRequest transactionRequest = inflightTransactionRequestManager.getOrCreateTransactionRequest(workflowInstanceKey);
             if (transactionRequest != null && transactionRequest.getStartedAt() == null) {
                 transactionRequest.setStartedAt(eventTime);
-                transactionRequestRepository.save(transactionRequest);
+                inflightTransactionRequestManager.save(transactionRequest);
             }
         } else if (batchType.equals(bpmnProcess.getType())) {
             Batch batch = inflightBatchManager.getOrCreateBatch(workflowInstanceKey);
             if (batch != null && batch.getStartedAt() == null) {
                 batch.setStartedAt(eventTime);
-                batchRepository.save(batch);
+                inflightBatchManager.save(batch);
             }
         }
     }

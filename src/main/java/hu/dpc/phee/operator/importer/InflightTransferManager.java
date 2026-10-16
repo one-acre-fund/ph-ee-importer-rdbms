@@ -2,6 +2,7 @@ package hu.dpc.phee.operator.importer;
 
 import hu.dpc.phee.operator.entity.transfer.Transfer;
 import hu.dpc.phee.operator.entity.transfer.TransferRepository;
+import hu.dpc.phee.operator.entity.tenant.ThreadLocalContextUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -25,7 +26,7 @@ public class InflightTransferManager {
         if (transfer.getStartedAt() == null) {
             transfer.setDirection(direction);
             transfer.setStartedAt(new Date(timestamp));
-            transferRepository.save(transfer);
+            save(transfer);
         } else {
             logger.debug("transfer {} already started at {}", workflowInstanceKey, transfer.getStartedAt());
         }
@@ -43,7 +44,7 @@ public class InflightTransferManager {
                 }
             }
             transfer.setCompletedAt(new Date(timestamp));
-            transferRepository.save(transfer);
+            save(transfer);
             logger.debug("transfer finished {}", transfer.getWorkflowInstanceKey());
         }
     }
@@ -53,6 +54,9 @@ public class InflightTransferManager {
             Transfer transfer = inflightTransfers.get(workflowInstanceKey);
             if (transfer == null) {
                 transfer = transferRepository.findFirstByWorkflowInstanceKeyAndCompletedAtIsNullOrderByIdDesc(workflowInstanceKey);
+                if (transfer == null) {
+                    transfer = redeliveredTransfer(workflowInstanceKey);
+                }
                 if (transfer == null) {
                     Long nextGeneration = getNextGeneration(workflowInstanceKey);
                     transfer = new Transfer(workflowInstanceKey, nextGeneration);
@@ -66,6 +70,31 @@ public class InflightTransferManager {
         }
     }
 
+
+    /**
+     * Persists the entity and keeps the managed copy in the cache. EclipseLink's merge leaves the
+     * passed object's version untouched, so saving the same instance twice would fail the
+     * optimistic lock on the second save.
+     */
+    public Transfer save(Transfer entity) {
+        Transfer saved = transferRepository.save(entity);
+        if (saved != null) {
+            synchronized (inflightTransfers) {
+                if (inflightTransfers.get(entity.getWorkflowInstanceKey()) == entity) {
+                    inflightTransfers.put(entity.getWorkflowInstanceKey(), saved);
+                }
+            }
+            return saved;
+        }
+        return entity;
+    }
+
+    public void clear() {
+        synchronized (inflightTransfers) {
+            inflightTransfers.clear();
+        }
+    }
+
     /**
      * Memory-only lookup. Used on the hot path so child events do not query the DB
      * after the process row is already inflight.
@@ -75,6 +104,25 @@ public class InflightTransferManager {
             Transfer transfer = inflightTransfers.get(workflowInstanceKey);
             return transfer == null ? null : transfer.getZeebeGeneration();
         }
+    }
+
+    /**
+     * A record whose Zeebe timestamp is not after the completion of the latest generation is a
+     * redelivery (Kafka at-least-once), not a new process instance reusing the key. Reuse that row
+     * instead of opening a new generation.
+     */
+    private Transfer redeliveredTransfer(Long workflowInstanceKey) {
+        Long recordTimestamp = ThreadLocalContextUtil.getRecordTimestamp();
+        if (recordTimestamp == null) {
+            return null;
+        }
+        Transfer latest = transferRepository.findTopByWorkflowInstanceKeyOrderByZeebeGenerationDesc(workflowInstanceKey);
+        // COMPLETED_AT is a DATETIME with second precision (MySQL rounds the milliseconds), so compare whole seconds.
+        if (latest != null && latest.getCompletedAt() != null && recordTimestamp / 1000 <= latest.getCompletedAt().getTime() / 1000) {
+            logger.info("record for completed transfer {} generation {} redelivered, reusing row", workflowInstanceKey, latest.getZeebeGeneration());
+            return latest;
+        }
+        return null;
     }
 
     private Long getNextGeneration(Long workflowInstanceKey) {

@@ -102,7 +102,7 @@ public class RecordParserTimestampTest {
 
         recordParser.addVariableToEntity(variable, "inbound_bancobu_fineract");
 
-        verify(transferRepository).save(any(Transfer.class));
+        verify(inflightTransferManager).save(any(Transfer.class));
         assertEquals(TransferStatus.COMPLETED, transfer.getStatus());
         assertNotNull(transfer.getStartedAt());
         assertNotNull(transfer.getCompletedAt());

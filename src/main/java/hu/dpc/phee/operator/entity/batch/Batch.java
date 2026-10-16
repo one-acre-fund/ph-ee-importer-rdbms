@@ -7,11 +7,21 @@ import javax.persistence.Column;
 import javax.persistence.Entity;
 import javax.persistence.Id;
 import javax.persistence.Table;
+import javax.persistence.UniqueConstraint;
+import javax.persistence.Version;
 import java.util.Date;
 
 @Entity
-@Table(name = "batches")
+@Table(name = "batches", uniqueConstraints = @UniqueConstraint(name = "uk_batches_instance_generation", columnNames = {"WORKFLOW_INSTANCE_KEY", "ZEEBE_GENERATION"}))
 public class Batch extends AbstractPersistableCustom<Long> {
+
+    // Optimistic lock. The EclipseLink shared cache is off, so saving a detached entity merges
+    // every field over the current row. A stale copy held by another pod (a fenced consumer still
+    // finishing its batch after a rebalance) would otherwise overwrite newer values. A version
+    // mismatch fails the save, which clears the in-memory caches and re-polls the record.
+    @Version
+    @Column(name = "VERSION")
+    private Long version;
 
     @Column(name = "BATCH_ID")
     private String batchId;
