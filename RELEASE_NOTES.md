@@ -7,7 +7,7 @@
           caches are cleared on rebalance; database errors are retried instead of committed
           past; batch CSV rows are not re-inserted on replay; a redelivered record for a
           completed instance reuses its row instead of opening a new generation; unique
-          keys per (instance, generation), applied to existing schemas by the operations app Flyway migration V53 (tenant) and V6 (core), which must run before this image starts;
+          keys per (instance, generation), applied to existing schemas by the operations app Flyway migration V54 (tenant) and V6 (core), which must run before this image starts;
           a database error is retried without limit (the partition stalls, lag grows) instead
           of the record being skipped after ten attempts; transfers, transaction requests and
           batches carry an optimistic lock (VERSION column) so a stale copy held by another
