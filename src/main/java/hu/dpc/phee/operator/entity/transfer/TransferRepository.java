@@ -1,5 +1,7 @@
 package hu.dpc.phee.operator.entity.transfer;
 
+import java.util.List;
+
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 
@@ -10,7 +12,10 @@ public interface TransferRepository extends JpaRepository<Transfer, Long>, JpaSp
     Transfer findFirstByWorkflowInstanceKeyAndCompletedAtIsNullOrderByIdDesc(Long workflowInstanceKey);
 
     Transfer findTopByWorkflowInstanceKeyOrderByZeebeGenerationDesc(Long workflowInstanceKey);
+    List<Transfer> findByWorkflowInstanceKeyOrderByZeebeGenerationAsc(Long workflowInstanceKey);
 
     Transfer findByWorkflowInstanceKeyAndZeebeGeneration(Long workflowInstanceKey, Long zeebeGeneration);
+
+    boolean existsByWorkflowInstanceKeyAndZeebeGenerationAndTransactionId(Long workflowInstanceKey, Long zeebeGeneration, String transactionId);
 
 }

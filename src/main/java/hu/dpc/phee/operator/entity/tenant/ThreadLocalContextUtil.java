@@ -23,6 +23,7 @@ import org.springframework.util.Assert;
 public class ThreadLocalContextUtil {
 
     private static final ThreadLocal<TenantServerConnection> tenantcontext = new ThreadLocal<>();
+    private static final ThreadLocal<Long> recordTimestamp = new ThreadLocal<>();
 
     public static void setTenant(final TenantServerConnection tenant) {
         Assert.notNull(tenant, "tenant cannot be null");
@@ -33,7 +34,17 @@ public class ThreadLocalContextUtil {
         return tenantcontext.get();
     }
 
+    /** Zeebe timestamp of the record being processed on this thread, used to tell a redelivered record from a new generation. */
+    public static void setRecordTimestamp(final Long timestamp) {
+        recordTimestamp.set(timestamp);
+    }
+
+    public static Long getRecordTimestamp() {
+        return recordTimestamp.get();
+    }
+
     public static void clear() {
         tenantcontext.remove();
+        recordTimestamp.remove();
     }
 }

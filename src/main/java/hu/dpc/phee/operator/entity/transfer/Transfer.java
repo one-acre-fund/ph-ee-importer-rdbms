@@ -2,18 +2,29 @@ package hu.dpc.phee.operator.entity.transfer;
 
 
 import hu.dpc.phee.operator.entity.parent.AbstractPersistableCustom;
+import hu.dpc.phee.operator.entity.parent.GenerationRow;
 
 import javax.persistence.Column;
 import javax.persistence.Entity;
 import javax.persistence.EnumType;
 import javax.persistence.Enumerated;
 import javax.persistence.Table;
+import javax.persistence.UniqueConstraint;
+import javax.persistence.Version;
 import java.math.BigDecimal;
 import java.util.Date;
 
 @Entity
-@Table(name = "transfers")
-public class Transfer extends AbstractPersistableCustom<Long> {
+@Table(name = "transfers", uniqueConstraints = @UniqueConstraint(name = "uk_transfers_instance_generation_key", columnNames = {"WORKFLOW_INSTANCE_KEY", "ZEEBE_GENERATION", "TRANSFER_KEY"}))
+public class Transfer extends AbstractPersistableCustom<Long> implements GenerationRow {
+
+    // Optimistic lock. The EclipseLink shared cache is off, so saving a detached entity merges
+    // every field over the current row. A stale copy held by another pod (a fenced consumer still
+    // finishing its batch after a rebalance) would otherwise overwrite newer values. A version
+    // mismatch fails the save, which clears the in-memory caches and re-polls the record.
+    @Version
+    @Column(name = "VERSION")
+    private Long version;
 
     @Column(name = "WORKFLOW_INSTANCE_KEY")
     private Long workflowInstanceKey;
@@ -23,6 +34,13 @@ public class Transfer extends AbstractPersistableCustom<Long> {
 
     @Column(name = "TRANSACTION_ID")
     private String transactionId;
+
+    // Row identity for the unique key, a MySQL generated column (operations app Flyway migration V53):
+    // the transaction id once known, '' for an ordinary transfer that has none yet, NULL for a
+    // batch CSV row without a request id. MySQL lets any number of NULLs through a unique index,
+    // so without it two consumers could insert the same ordinary transfer before its id arrives.
+    @Column(name = "TRANSFER_KEY", insertable = false, updatable = false)
+    private String transferKey;
 
     @Column(name = "STARTED_AT")
     private Date startedAt;

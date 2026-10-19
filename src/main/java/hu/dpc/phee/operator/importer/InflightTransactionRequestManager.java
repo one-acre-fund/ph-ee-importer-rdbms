@@ -2,6 +2,7 @@ package hu.dpc.phee.operator.importer;
 
 import hu.dpc.phee.operator.entity.transactionrequest.TransactionRequest;
 import hu.dpc.phee.operator.entity.transactionrequest.TransactionRequestRepository;
+import hu.dpc.phee.operator.entity.tenant.ThreadLocalContextUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -28,7 +29,7 @@ public class InflightTransactionRequestManager {
         if (transactionRequest.getStartedAt() == null) {
             transactionRequest.setDirection(direction);
             transactionRequest.setStartedAt(new Date(timestamp));
-            transactionRequestRepository.save(transactionRequest);
+            save(transactionRequest);
             logger.debug("started in-flight {} transactionRequest {}", transactionRequest.getDirection(), transactionRequest.getWorkflowInstanceKey());
         } else {
             logger.debug("transactionRequest {} already started at {}", workflowInstanceKey, transactionRequest.getStartedAt());
@@ -49,7 +50,7 @@ public class InflightTransactionRequestManager {
 
             transactionRequest.setCompletedAt(new Date(timestamp));
 
-            transactionRequestRepository.save(transactionRequest);
+            save(transactionRequest);
             tempDocumentStore.deleteDocument(workflowInstanceKey);
             logger.debug("transactionRequest {} finished", transactionRequest.getWorkflowInstanceKey());
         }
@@ -60,6 +61,9 @@ public class InflightTransactionRequestManager {
             TransactionRequest transactionRequest = inflightTransactionRequests.get(workflowInstanceKey);
             if (transactionRequest == null) {
                 transactionRequest = transactionRequestRepository.findFirstByWorkflowInstanceKeyAndCompletedAtIsNullOrderByIdDesc(workflowInstanceKey);
+                if (transactionRequest == null) {
+                    transactionRequest = redeliveredTransactionRequest(workflowInstanceKey);
+                }
                 if (transactionRequest == null) {
                     Long nextGeneration = getNextGeneration(workflowInstanceKey);
                     transactionRequest = new TransactionRequest(workflowInstanceKey, nextGeneration);
@@ -72,6 +76,31 @@ public class InflightTransactionRequestManager {
         }
     }
 
+
+    /**
+     * Persists the entity and keeps the managed copy in the cache. EclipseLink's merge leaves the
+     * passed object's version untouched, so saving the same instance twice would fail the
+     * optimistic lock on the second save.
+     */
+    public TransactionRequest save(TransactionRequest entity) {
+        TransactionRequest saved = transactionRequestRepository.save(entity);
+        if (saved != null) {
+            synchronized (inflightTransactionRequests) {
+                if (inflightTransactionRequests.get(entity.getWorkflowInstanceKey()) == entity) {
+                    inflightTransactionRequests.put(entity.getWorkflowInstanceKey(), saved);
+                }
+            }
+            return saved;
+        }
+        return entity;
+    }
+
+    public void clear() {
+        synchronized (inflightTransactionRequests) {
+            inflightTransactionRequests.clear();
+        }
+    }
+
     /**
      * Memory-only lookup. Used on the hot path so child events do not query the DB
      * after the process row is already inflight.
@@ -81,6 +110,24 @@ public class InflightTransactionRequestManager {
             TransactionRequest transactionRequest = inflightTransactionRequests.get(workflowInstanceKey);
             return transactionRequest == null ? null : transactionRequest.getZeebeGeneration();
         }
+    }
+
+    /**
+     * A record whose Zeebe timestamp is not after the latest completion is a redelivery (Kafka
+     * at-least-once), not a new process instance reusing the key. Reuse the row of the generation
+     * that was running at that time instead of opening a new one.
+     */
+    private TransactionRequest redeliveredTransactionRequest(Long workflowInstanceKey) {
+        Long recordTimestamp = ThreadLocalContextUtil.getRecordTimestamp();
+        if (recordTimestamp == null) {
+            return null;
+        }
+        TransactionRequest match = RedeliveryMatcher.match(
+                transactionRequestRepository.findByWorkflowInstanceKeyOrderByZeebeGenerationAsc(workflowInstanceKey), recordTimestamp);
+        if (match != null) {
+            logger.info("record for completed transactionRequest {} generation {} redelivered, reusing row", workflowInstanceKey, match.getZeebeGeneration());
+        }
+        return match;
     }
 
     private Long getNextGeneration(Long workflowInstanceKey) {

@@ -9,6 +9,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataAccessException;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.listener.ConsumerSeekAware;
 import org.springframework.stereotype.Component;
@@ -71,10 +72,11 @@ public class KafkaConsumer implements ConsumerSeekAware {
                     logger.warn("Record with key {} has no processDefinitionKey, skip processing", recordKey);
                     return;
                 }
-                tempDocumentStore.storeDocument(processDefinitionKey, incomingRecord);
-                logger.info("Record with key {} processDefinitionKey {} has no associated bpmn, stored temporarily",
-                        recordKey, processDefinitionKey);
-                return;
+                // The mapping comes from a DEPLOYMENT record that another replica may own. Keeping
+                // the record only in memory and committing its offset would lose it with the pod, so
+                // hold the partition until the mapping shows up in process_definitions.
+                throw new RetryableRecordException("record " + recordKey + " has no bpmnProcessId and process definition "
+                        + processDefinitionKey + " is not registered yet");
             }
 
             tempDocumentStore.setBpmnprocessId(processDefinitionKey, bpmnprocessIdWithTenant);
@@ -100,10 +102,28 @@ public class KafkaConsumer implements ConsumerSeekAware {
                     .thenComparing(ZeebeRecordReader::readTimestamp, Comparator.nullsLast(Long::compareTo)));
 
             logger.debug("Start processing of {} documents.", documents.size());
-            for (DocumentContext doc : documents) {
-                processDocument(doc, bpmnprocessId, processDefinitionKey);
+            for (int i = 0; i < documents.size(); i++) {
+                try {
+                    processDocument(documents.get(i), bpmnprocessId, processDefinitionKey);
+                } catch (DataAccessException ex) {
+                    // Put back the stored documents we did not get to; Kafka redelivers the incoming one.
+                    for (DocumentContext remaining : documents.subList(i, documents.size())) {
+                        if (remaining != incomingRecord) {
+                            tempDocumentStore.storeDocument(processDefinitionKey, remaining);
+                        }
+                    }
+                    throw ex;
+                }
             }
             logger.debug("Total Time 1 {}", (System.currentTimeMillis() - startTime));
+        } catch (RetryableRecordException ex) {
+            logger.error("zeebe event cannot be processed yet, record will be retried: {}", ex.getMessage());
+            throw ex;
+        } catch (DataAccessException ex) {
+            // Database trouble: drop cached entities and let the container re-poll this record.
+            logger.error("database error while processing zeebe event, record will be retried: {}", ex.getMessage());
+            recordParser.clearInflightState();
+            throw ex;
         } catch (Exception ex) {
             logger.error("Could not parse zeebe event:\n{}\nerror: {}\ntrace: {}",
                     rawData,
@@ -134,13 +154,11 @@ public class KafkaConsumer implements ConsumerSeekAware {
         String valueType = null;
         try {
             valueType = doc.read("$.valueType", String.class);
+            ThreadLocalContextUtil.setRecordTimestamp(ZeebeRecordReader.readTimestamp(doc));
             logger.info("Processing document of type {}", valueType);
             switch (valueType) {
                 case "VARIABLE":
-                    DocumentContext processedVariable = recordParser.processVariable(doc, bpmnprocessId);
-                    if (processedVariable != null) {
-                        recordParser.addVariableToEntity(processedVariable, bpmnprocessId);
-                    }
+                    recordParser.importVariable(doc, bpmnprocessId);
                     break;
                 case "JOB":
                     recordParser.processTask(doc, bpmnprocessId);
@@ -160,6 +178,8 @@ public class KafkaConsumer implements ConsumerSeekAware {
                     logger.debug("Skipping unsupported valueType {}", valueType);
                     break;
             }
+        } catch (DataAccessException ex) {
+            throw ex;
         } catch (Exception ex) {
             logger.error("Failed to process document:\n{}\nof valueType:\n{}\nerror: {}\ntrace: {}",
                     doc.jsonString(),

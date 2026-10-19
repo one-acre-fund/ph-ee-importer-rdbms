@@ -7,9 +7,10 @@ import javax.persistence.Cacheable;
 import javax.persistence.Column;
 import javax.persistence.Entity;
 import javax.persistence.Table;
+import javax.persistence.UniqueConstraint;
 
 @Entity
-@Table(name = "tasks")
+@Table(name = "tasks", uniqueConstraints = @UniqueConstraint(name = "uk_tasks_instance_generation_element_intent", columnNames = {"WORKFLOW_INSTANCE_KEY", "ZEEBE_GENERATION", "ELEMENT_ID", "INTENT"}))
 public class Task extends AbstractPersistableCustom<Long> {
 
     @Column(name = "WORKFLOW_KEY")

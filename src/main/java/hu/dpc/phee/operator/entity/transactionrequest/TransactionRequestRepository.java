@@ -1,5 +1,7 @@
 package hu.dpc.phee.operator.entity.transactionrequest;
 
+import java.util.List;
+
 import org.springframework.data.repository.CrudRepository;
 
 public interface TransactionRequestRepository extends CrudRepository<TransactionRequest, Long> {
@@ -9,6 +11,7 @@ public interface TransactionRequestRepository extends CrudRepository<Transaction
     TransactionRequest findFirstByWorkflowInstanceKeyAndCompletedAtIsNullOrderByIdDesc(Long workflowInstanceKey);
 
     TransactionRequest findTopByWorkflowInstanceKeyOrderByZeebeGenerationDesc(Long workflowInstanceKey);
+    List<TransactionRequest> findByWorkflowInstanceKeyOrderByZeebeGenerationAsc(Long workflowInstanceKey);
 
     TransactionRequest findByWorkflowInstanceKeyAndZeebeGeneration(Long workflowInstanceKey, Long zeebeGeneration);
 
