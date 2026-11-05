@@ -156,6 +156,9 @@ public class RecordParser {
 
                 Transfer transfer = inflightTransferManager.getOrCreateTransfer(workflowInstanceKey);
                 variableParser.getTransferParsers().get(name).accept(Pair.of(transfer, value));
+                if (transfer.getDirection() == null) {
+                    transfer.setDirection(bpmnProcess.getDirection());
+                }
                 applyTransferTimestamps(transfer, newVariable);
                 inflightTransferManager.save(transfer);
             }
@@ -451,8 +454,13 @@ public class RecordParser {
         }
         if (transferType.equals(bpmnProcess.getType())) {
             Transfer transfer = inflightTransferManager.getOrCreateTransfer(workflowInstanceKey);
-            if (transfer != null && transfer.getStartedAt() == null) {
-                transfer.setStartedAt(eventTime);
+            if (transfer != null && (transfer.getStartedAt() == null || transfer.getDirection() == null)) {
+                if (transfer.getStartedAt() == null) {
+                    transfer.setStartedAt(eventTime);
+                }
+                if (transfer.getDirection() == null) {
+                    transfer.setDirection(bpmnProcess.getDirection());
+                }
                 inflightTransferManager.save(transfer);
             }
         } else if (transactionRequestType.equals(bpmnProcess.getType())) {

@@ -56,6 +56,10 @@ public class KafkaConsumer implements ConsumerSeekAware {
                 deploymentRegistry.registerFromDeployment(incomingRecord);
                 return;
             }
+            if ("PROCESS".equals(valueType)) {
+                deploymentRegistry.registerFromProcess(incomingRecord);
+                return;
+            }
 
             if ("VARIABLE_DOCUMENT".equals(valueType)) {
                 logger.info("Skipping VARIABLE_DOCUMENT record ");
@@ -138,6 +142,7 @@ public class KafkaConsumer implements ConsumerSeekAware {
     private String resolveBpmnProcessId(DocumentContext record, Long processDefinitionKey) {
         String bpmnprocessIdWithTenant = ZeebeRecordReader.readBpmnProcessIdWithTenant(record);
         if (bpmnprocessIdWithTenant != null) {
+            deploymentRegistry.remember(processDefinitionKey, bpmnprocessIdWithTenant);
             return bpmnprocessIdWithTenant;
         }
         if (processDefinitionKey != null) {
