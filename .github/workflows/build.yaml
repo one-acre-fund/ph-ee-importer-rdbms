@@ -17,7 +17,6 @@ env:
   REGISTRY_PROVIDER: ${{ vars.REGISTRY_PROVIDER != '' && vars.REGISTRY_PROVIDER || 'ecr' }}
   IMAGE_REPOSITORY: oneacrefund/ph-ee-importer-rdbms
   SHOULD_PUBLISH: ${{ github.ref  == 'refs/heads/master' || github.ref  == 'refs/heads/main' ||  github.ref == 'refs/heads/develop' || startsWith(github.ref , 'refs/heads/release') }}
-  IS_RELEASE: ${{ github.ref  == 'refs/heads/master' || github.ref  == 'refs/heads/main' || startsWith(github.ref , 'refs/heads/release') }}
 
 jobs:
   build:
@@ -39,14 +38,18 @@ jobs:
           java-version: '11'
           distribution: 'temurin'
 
-      - name: Get Revision
-        run: echo "REVISION=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
-
-      - name: Generate image tags
+      - name: Get Revision and Set Image Tag
         run: |
+          REVISION=$(git rev-parse --short=7 HEAD)
           VERSION_TAG=$(./gradlew -q printVersion)
-          IMAGE_TAGS="${VERSION_TAG}.$(date '+%Y.%m.%d').${REVISION}"
-          if [ $IS_RELEASE == 'true' ]; then IMAGE_TAGS="$VERSION_TAG"; fi
+          # <version>.<UTC date>.<UTC time>.<run number>.<attempt>-<short sha>
+          # Every build gets its own tag, release branches included: the plain version tag was
+          # overwritten by each release build, so deployments could not tell the images apart.
+          BUILD_DATE=$(date -u '+%Y.%m.%d.%H%M%S')
+          IMAGE_TAGS="${VERSION_TAG}.${BUILD_DATE}.${{ github.run_number }}.${{ github.run_attempt }}-${REVISION}"
+          echo "Image tag: $IMAGE_TAGS"
+          echo "REVISION=$REVISION" >> $GITHUB_ENV
+          echo "VERSION_TAG=$VERSION_TAG" >> $GITHUB_ENV
           echo "IMAGE_TAGS=$IMAGE_TAGS" >> $GITHUB_ENV
 
       - name: Gradlew build

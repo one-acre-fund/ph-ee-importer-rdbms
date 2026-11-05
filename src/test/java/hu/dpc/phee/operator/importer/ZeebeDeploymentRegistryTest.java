@@ -9,9 +9,12 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnitRunner;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.QueryTimeoutException;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -87,10 +90,47 @@ public class ZeebeDeploymentRegistryTest {
     }
 
     @Test
-    public void rememberSwallowsDuplicateInsertFromAnotherReplica() {
+    public void rememberAcceptsConfirmedDuplicateInsertFromAnotherReplica() {
+        // Lookup before insert finds nothing, the insert loses the race, the re-read finds the row.
+        when(processDefinitionRepository.findByProcessDefinitionKey(7L))
+                .thenReturn(null)
+                .thenReturn(new ProcessDefinition(7L, "inbound_bancobu_fineract-burundi"));
         when(processDefinitionRepository.save(any(ProcessDefinition.class)))
-                .thenThrow(new org.springframework.dao.DataIntegrityViolationException("duplicate"));
+                .thenThrow(new DataIntegrityViolationException("duplicate"));
+
         registry.remember(7L, "inbound_bancobu_fineract-burundi");
+        registry.remember(7L, "inbound_bancobu_fineract-burundi");
+
+        assertEquals("inbound_bancobu_fineract-burundi", registry.resolveBpmnProcessId(7L));
+        verify(processDefinitionRepository, times(1)).save(any(ProcessDefinition.class));
+    }
+
+    @Test
+    public void integrityViolationWithoutStoredRowPropagates() {
+        when(processDefinitionRepository.save(any(ProcessDefinition.class)))
+                .thenThrow(new DataIntegrityViolationException("not a duplicate"));
+        try {
+            registry.remember(7L, "x-burundi");
+            fail("expected the violation to propagate");
+        } catch (DataIntegrityViolationException expected) {
+            // Kafka redelivers the record that carries the mapping
+        }
+        assertNull(registry.resolveBpmnProcessId(7L));
+    }
+
+    @Test
+    public void integrityViolationWithDifferentStoredMappingPropagates() {
+        when(processDefinitionRepository.findByProcessDefinitionKey(7L))
+                .thenReturn(null)
+                .thenReturn(new ProcessDefinition(7L, "other-burundi"));
+        when(processDefinitionRepository.save(any(ProcessDefinition.class)))
+                .thenThrow(new DataIntegrityViolationException("duplicate"));
+        try {
+            registry.remember(7L, "x-burundi");
+            fail("expected the violation to propagate");
+        } catch (DataIntegrityViolationException expected) {
+            // the retry goes through persist again and updates the row
+        }
     }
 
     @Test
@@ -159,16 +199,32 @@ public class ZeebeDeploymentRegistryTest {
     }
 
     @Test
-    public void failedWriteIsRetriedOnTheNextSighting() {
+    public void nonDuplicateWriteFailurePropagatesAndIsNotCached() {
         when(processDefinitionRepository.save(any(ProcessDefinition.class)))
-                .thenThrow(new org.springframework.dao.QueryTimeoutException("timeout"))
+                .thenThrow(new QueryTimeoutException("timeout"))
                 .thenReturn(null);
+        try {
+            registry.remember(7L, "x-burundi");
+            fail("expected the failure to propagate so Kafka redelivers the record");
+        } catch (QueryTimeoutException expected) {
+            // not cached, so the redelivered record writes again
+        }
 
-        registry.remember(7L, "x-burundi");
         registry.remember(7L, "x-burundi");
 
         verify(processDefinitionRepository, times(2)).save(any(ProcessDefinition.class));
         assertEquals("x-burundi", registry.resolveBpmnProcessId(7L));
+    }
+
+    @Test
+    public void deploymentWriteFailurePropagates() {
+        when(processDefinitionRepository.save(any(ProcessDefinition.class))).thenThrow(new QueryTimeoutException("timeout"));
+        try {
+            registry.registerFromDeployment(deployment("\"processDefinitionKey\":99", "mpesa_flow-burundi"));
+            fail("expected the failure to propagate");
+        } catch (QueryTimeoutException expected) {
+            // the DEPLOYMENT record is redelivered
+        }
     }
 
     @Test

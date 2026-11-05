@@ -6,7 +6,7 @@ import hu.dpc.phee.operator.entity.processdefinition.ProcessDefinitionRepository
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.dao.DataAccessException;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -57,28 +57,39 @@ public class ZeebeDeploymentRegistry {
      * Learns the mapping from any record that carries both fields. Definitions deployed before
      * this registry existed never produce a DEPLOYMENT record we can consume, so this is what
      * fills process_definitions for them. Only the first sighting per pod touches the database.
+     * <p>
+     * A failed write propagates so Kafka redelivers this record: it may be the only one carrying
+     * the mapping, and records without bpmnProcessId would otherwise wait on it indefinitely.
      */
     public void remember(Long processDefinitionKey, String bpmnProcessId) {
         if (processDefinitionKey == null || bpmnProcessId == null
                 || bpmnProcessId.equals(processDefinitionKeyToBpmn.get(processDefinitionKey))) {
             return;
         }
-        try {
-            register(processDefinitionKey, bpmnProcessId);
-        } catch (DataAccessException ex) {
-            // Another replica may have inserted the same key; the record itself carries the id,
-            // so routing it does not depend on this write.
-            logger.warn("could not persist process definition mapping {} -> {}: {}", processDefinitionKey, bpmnProcessId, ex.getMessage());
-        }
+        register(processDefinitionKey, bpmnProcessId);
     }
 
     private void register(Long processDefinitionKey, String bpmnProcessId) {
         if (processDefinitionKey == null || bpmnProcessId == null) {
             return;
         }
-        persist(processDefinitionKey, bpmnProcessId);
+        try {
+            persist(processDefinitionKey, bpmnProcessId);
+        } catch (DataIntegrityViolationException ex) {
+            if (!isStored(processDefinitionKey, bpmnProcessId)) {
+                throw ex;
+            }
+            // Another replica inserted the same mapping between our lookup and insert.
+            logger.debug("process definition mapping {} -> {} already stored by another replica", processDefinitionKey, bpmnProcessId);
+        }
         processDefinitionKeyToBpmn.put(processDefinitionKey, bpmnProcessId);
         logger.info("Registered process definition mapping {} -> {}", processDefinitionKey, bpmnProcessId);
+    }
+
+    /** Confirms a unique-key violation was a concurrent insert of this exact mapping. */
+    private boolean isStored(Long processDefinitionKey, String bpmnProcessId) {
+        ProcessDefinition stored = processDefinitionRepository.findByProcessDefinitionKey(processDefinitionKey);
+        return stored != null && bpmnProcessId.equals(stored.getBpmnProcessId());
     }
 
     public String resolveBpmnProcessId(Long processDefinitionKey) {
