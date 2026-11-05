@@ -129,4 +129,65 @@ public class KafkaConsumerWorkflowInstanceTest {
         verify(repository, never()).findOneBySchemaName(any());
         verify(tempDocumentStore, never()).takeStoredDocuments(anyLong());
     }
+    @Test
+    public void processRecordRegistersMappingWithoutProcessingBusinessRecords() {
+        String process = "{"
+                + "\"valueType\":\"PROCESS\",\"intent\":\"CREATED\",\"key\":2251799813685423,"
+                + "\"value\":{\"bpmnProcessId\":\"inbound_bancobu_fineract-burundi\","
+                + "\"processDefinitionKey\":2251799813685423,\"version\":1}"
+                + "}";
+
+        kafkaConsumer.listen(process);
+
+        verify(deploymentRegistry).registerFromProcess(any(DocumentContext.class));
+        verify(deploymentRegistry, never()).remember(any(), any());
+        verify(repository, never()).findOneBySchemaName(any());
+        verify(recordParser, never()).processWorkflowInstance(any(DocumentContext.class), any());
+    }
+
+    @Test
+    public void recordCarryingBpmnProcessIdTeachesTheRegistry() {
+        TenantServerConnection tenant = new TenantServerConnection();
+        tenant.setSchemaName("burundi");
+        when(repository.findOneBySchemaName("burundi")).thenReturn(tenant);
+
+        // VARIABLE record exported by Zeebe 8.2.29 for inbound_bancobu_fineract-burundi.
+        String variable = "{"
+                + "\"valueType\":\"VARIABLE\",\"intent\":\"CREATED\","
+                + "\"timestamp\":1793875160353,\"key\":11258999074964465,"
+                + "\"value\":{\"processInstanceKey\":11258999074964344,"
+                + "\"processDefinitionKey\":2251799813685423,"
+                + "\"bpmnProcessId\":\"inbound_bancobu_fineract-burundi\","
+                + "\"scopeKey\":11258999074964344,"
+                + "\"name\":\"transferSettlementFailed\",\"value\":\"false\"}"
+                + "}";
+
+        kafkaConsumer.listen(variable);
+
+        verify(deploymentRegistry).remember(2251799813685423L, "inbound_bancobu_fineract-burundi");
+        verify(recordParser).importVariable(any(DocumentContext.class), eq("inbound_bancobu_fineract"));
+    }
+
+    @Test
+    public void recordWithoutBpmnProcessIdIsRoutedFromRegistryAndNotRemembered() {
+        TenantServerConnection tenant = new TenantServerConnection();
+        tenant.setSchemaName("burundi");
+        when(repository.findOneBySchemaName("burundi")).thenReturn(tenant);
+        when(deploymentRegistry.resolveBpmnProcessId(2251799813685423L)).thenReturn("inbound_bancobu_fineract-burundi");
+
+        // PROCESS_EVENT records carry processDefinitionKey but no bpmnProcessId.
+        String processEvent = "{"
+                + "\"valueType\":\"PROCESS_EVENT\",\"intent\":\"TRIGGERING\","
+                + "\"timestamp\":1793882562786,\"key\":2251799820244897,"
+                + "\"value\":{\"processInstanceKey\":2251799820244774,"
+                + "\"processDefinitionKey\":2251799813685423,"
+                + "\"targetElementId\":\"transfer-settlement-fineract\",\"variables\":{}}"
+                + "}";
+
+        kafkaConsumer.listen(processEvent);
+
+        verify(deploymentRegistry, never()).remember(any(), any());
+        verify(tempDocumentStore).setBpmnprocessId(2251799813685423L, "inbound_bancobu_fineract-burundi");
+        verify(recordParser, never()).importVariable(any(DocumentContext.class), any());
+    }
 }

@@ -23,12 +23,21 @@ public class InflightTransferManager {
 
     public void transferStarted(Long workflowInstanceKey, Long timestamp, String direction) {
         Transfer transfer = getOrCreateTransfer(workflowInstanceKey);
-        if (transfer.getStartedAt() == null) {
+        // A variable record processed before ELEMENT_ACTIVATING already fills startedAt, so the
+        // direction must not depend on startedAt being empty.
+        boolean changed = false;
+        if (transfer.getDirection() == null && direction != null) {
             transfer.setDirection(direction);
+            changed = true;
+        }
+        if (transfer.getStartedAt() == null) {
             transfer.setStartedAt(new Date(timestamp));
-            save(transfer);
+            changed = true;
         } else {
             logger.debug("transfer {} already started at {}", workflowInstanceKey, transfer.getStartedAt());
+        }
+        if (changed) {
+            save(transfer);
         }
     }
 

@@ -125,11 +125,58 @@ public class InflightTransferManagerTest {
     public void transferStartedIsIdempotentWhenAlreadyStarted() {
         Transfer transfer = inflightTransferManager.getOrCreateTransfer(KEY);
         transfer.setStartedAt(new Date(500L));
+        transfer.setDirection("INCOMING");
 
         inflightTransferManager.transferStarted(KEY, 1_000L, "OUTGOING");
 
         assertEquals(500L, transfer.getStartedAt().getTime());
+        assertEquals("INCOMING", transfer.getDirection());
         verify(transferRepository, never()).save(transfer);
+    }
+
+    @Test
+    public void transferStartedSetsDirectionWhenVariableAlreadyFilledStartedAt() {
+        Transfer transfer = inflightTransferManager.getOrCreateTransfer(KEY);
+        transfer.setStartedAt(new Date(500L));
+
+        inflightTransferManager.transferStarted(KEY, 1_000L, "OUTGOING");
+
+        assertEquals(500L, transfer.getStartedAt().getTime());
+        assertEquals("OUTGOING", transfer.getDirection());
+        verify(transferRepository).save(transfer);
+    }
+
+    @Test
+    public void transferStartedOnNewTransferSetsDirectionAndStartedAtInOneSave() {
+        Transfer transfer = inflightTransferManager.getOrCreateTransfer(KEY);
+
+        inflightTransferManager.transferStarted(KEY, 1_000L, "INCOMING");
+
+        assertEquals("INCOMING", transfer.getDirection());
+        assertEquals(1_000L, transfer.getStartedAt().getTime());
+        verify(transferRepository, times(1)).save(transfer);
+    }
+
+    @Test
+    public void transferStartedWithNullDirectionStillRecordsStart() {
+        Transfer transfer = inflightTransferManager.getOrCreateTransfer(KEY);
+
+        inflightTransferManager.transferStarted(KEY, 1_000L, null);
+
+        assertNull(transfer.getDirection());
+        assertEquals(1_000L, transfer.getStartedAt().getTime());
+        verify(transferRepository, times(1)).save(transfer);
+    }
+
+    @Test
+    public void transferStartedDoesNotOverwriteDirectionFromVariable() {
+        Transfer transfer = inflightTransferManager.getOrCreateTransfer(KEY);
+        transfer.setDirection("INCOMING");
+
+        inflightTransferManager.transferStarted(KEY, 1_000L, "OUTGOING");
+
+        assertEquals("INCOMING", transfer.getDirection());
+        assertEquals(1_000L, transfer.getStartedAt().getTime());
     }
 
     @Test

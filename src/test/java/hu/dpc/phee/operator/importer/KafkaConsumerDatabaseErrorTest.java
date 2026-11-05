@@ -79,4 +79,17 @@ public class KafkaConsumerDatabaseErrorTest {
         verify(recordParser).clearInflightState();
         verify(tempDocumentStore, never()).storeDocument(anyLong(), any(DocumentContext.class));
     }
+    @Test
+    public void failedMappingWriteRetriesTheRecordThatCarriesIt() {
+        doThrow(new DataAccessResourceFailureException("db down"))
+                .when(deploymentRegistry).remember(2251799813793627L, "inbound_bancobu_fineract-burundi");
+        try {
+            kafkaConsumer.listen(ACTIVATING);
+            fail("expected the record to be retried");
+        } catch (DataAccessResourceFailureException expected) {
+            // the container re-polls the record until the mapping is stored
+        }
+        verify(recordParser).clearInflightState();
+        verify(recordParser, never()).processWorkflowInstance(any(DocumentContext.class), any());
+    }
 }
