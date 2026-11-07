@@ -14,6 +14,11 @@ importer:
   kafka:
     topic: "zeebe-export"
     reset: false
+  variables:
+    # Names never written to the variables table: timers, feature flags, retry counters and HTTP
+    # codes that carry no payment information (FD-1737). Names that VariableParser maps into the
+    # transfers, transaction_requests or batches columns must not be listed. Empty stores everything.
+    skip-names: "timer,confirmRequestWaitPeriod,airtelConfirmationTimer,tnmPayRequestWaitPeriod,isNotificationsSuccessEnabled,isNotificationsFailureEnabled,isValidationReferencePresent,isCallbackReceived,mpesaTransactionStatusRetryCount,getTransactionStatusHttpCode"
 
 spring:
   jpa:
