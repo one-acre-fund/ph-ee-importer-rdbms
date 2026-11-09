@@ -32,13 +32,17 @@ import org.springframework.data.util.Pair;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import javax.annotation.PostConstruct;
+
 import java.io.FileReader;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 import static hu.dpc.phee.operator.OperatorUtils.strip;
@@ -62,6 +66,14 @@ public class RecordParser {
 
     @Value("${application.bucket-name}")
     private String bucketName;
+
+    /**
+     * Variable names that are never written to the variables table: timers, feature flags, retry
+     * counters and HTTP codes that carry no payment information (FD-1737). Names that
+     * VariableParser maps into entity columns must not be listed, the entity update needs them.
+     */
+    @Value("${importer.variables.skip-names:}")
+    private Set<String> skipVariableNames = new HashSet<>();
 
     @Autowired
     private TaskRepository taskRepository;
@@ -202,10 +214,19 @@ public class RecordParser {
         }
     }
 
+    @PostConstruct
+    void logSkipList() {
+        logger.info("Variables never stored (importer.variables.skip-names): {}", skipVariableNames);
+    }
+
     public DocumentContext processVariable(DocumentContext json, String bpmnProcessId) {
-        Long workflowInstanceKey = ZeebeRecordReader.readProcessInstanceKey(json);
-        Long generationKey = generationKey(workflowInstanceKey);
         String name = json.read("$.value.name");
+        Long workflowInstanceKey = ZeebeRecordReader.readProcessInstanceKey(json);
+        if (skipVariableNames.contains(name)) {
+            logger.debug("Variable {} of instance {} is on the skip-list, not stored", name, workflowInstanceKey);
+            return null;
+        }
+        Long generationKey = generationKey(workflowInstanceKey);
         Long newTimestamp = ZeebeRecordReader.readTimestamp(json);
         Long zeebeGeneration = workflowGenerationResolver.ensureGeneration(bpmnProcessId, generationKey);
         List<Variable> existingVariables = variableRepository.findByWorkflowInstanceKeyAndZeebeGeneration(workflowInstanceKey, zeebeGeneration);
