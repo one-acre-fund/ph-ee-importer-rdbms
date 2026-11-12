@@ -11,6 +11,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.support.DefaultLifecycleProcessor;
 import org.springframework.kafka.annotation.EnableKafka;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.config.KafkaListenerContainerFactory;
@@ -18,6 +19,7 @@ import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
 import org.springframework.kafka.listener.ConsumerAwareRebalanceListener;
+import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.SeekToCurrentErrorHandler;
 import org.springframework.util.backoff.FixedBackOff;
 
@@ -52,6 +54,12 @@ public class KafkaConfiguration {
     @Value("${kafka.auto-offset-reset:earliest}")
     private String autoOffsetReset;
 
+    @Value("${kafka.max-poll-records:100}")
+    private int maxPollRecords;
+
+    @Value("${kafka.shutdown-timeout-ms:45000}")
+    private long shutdownTimeoutMs;
+
     @Autowired
     private RecordParser recordParser;
 
@@ -61,6 +69,14 @@ public class KafkaConfiguration {
         factory.setConsumerFactory(consumerFactory());
         factory.setConcurrency(concurrency);
         factory.getContainerProperties().setPollTimeout(pollTimeoutMs);
+        // Bounds a direct container stop(); the context-close path is bounded by lifecycleProcessor().
+        factory.getContainerProperties().setShutdownTimeout(shutdownTimeoutMs);
+        // Commit each record's offset as soon as the record is processed. On SIGTERM the consumer
+        // finishes its current poll, and when the database is slow that can outlast the shutdown
+        // budget; with per-batch commits every record already written in that poll was then read
+        // again. Per-record commits cap the redelivery at the records in flight, whatever the
+        // database speed, for one synchronous commit per record (FD-1939).
+        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.RECORD);
         // A record that failed on a database error is re-polled instead of being committed past.
         // Only DataAccessException and RetryableRecordException reach this handler (KafkaConsumer
         // logs and swallows the rest), so retrying without limit stalls the partition during a
@@ -79,6 +95,21 @@ public class KafkaConfiguration {
         return factory;
     }
 
+    /**
+     * On SIGTERM Spring stops the listener containers first and waits for their consumer threads to
+     * finish the records of the current poll, commit the offsets and leave the group. The wait is the
+     * lifecycle processor's timeout per shutdown phase (30 s by default, and not configurable through a
+     * property on this Spring Boot version), after which the data source is closed under the still
+     * running batch and the JVM exits. Both this and the container shutdown timeout follow
+     * kafka.shutdown-timeout-ms, which must stay below the pod's terminationGracePeriodSeconds.
+     */
+    @Bean(name = "lifecycleProcessor")
+    public DefaultLifecycleProcessor lifecycleProcessor() {
+        DefaultLifecycleProcessor processor = new DefaultLifecycleProcessor();
+        processor.setTimeoutPerShutdownPhase(shutdownTimeoutMs);
+        return processor;
+    }
+
     @Bean
     public ConsumerFactory<String, String> consumerFactory() {
         return new DefaultKafkaConsumerFactory<>(consumerConfigs());
@@ -95,6 +126,8 @@ public class KafkaConfiguration {
         // A group without committed offsets (first deploy of the fixed group id) starts at the
         // beginning of the retained topic rather than skipping the backlog; writes are idempotent.
         properties.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, autoOffsetReset);
+        // Bounds the work between two commits so a batch finishes inside the shutdown timeout.
+        properties.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, maxPollRecords);
         properties.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         properties.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         logger.info("using Kafka consumer group {} with {} consumer threads", consumerGroup, concurrency);

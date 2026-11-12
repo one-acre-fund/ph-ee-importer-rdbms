@@ -9,6 +9,12 @@ kafka:
   poll-timeout-ms: 3000
   # Pause between retries of a record whose write failed; retries are unlimited.
   retry-backoff-ms: 1000
+  # Records per poll. Offsets are committed per record (FD-1939), so this bounds how long the
+  # consumer keeps working after SIGTERM, not how much is read again.
+  max-poll-records: 100
+  # How long the consumer threads may finish and commit the current poll after SIGTERM before the
+  # data source is closed and the JVM exits. Must stay below the pod's terminationGracePeriodSeconds.
+  shutdown-timeout-ms: 45000
 
 importer:
   kafka:
