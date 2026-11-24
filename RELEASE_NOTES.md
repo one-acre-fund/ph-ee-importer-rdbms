@@ -1,5 +1,10 @@
 # Release Notes
 
+## Version 1.2.1 - Up to date with Mifos Version 1.0.0-SNAPSHOT
+    *  Generation resolution by record time
+        * [FD-1987] - A record is matched to the generation that was running at its timestamp instead of the latest one,
+                      so a replayed record can be routed to the same instance that was running when it was first processed
+
 ## Version 1.2.0 - Up to date with Mifos Version 1.0.0-SNAPSHOT
     *  Horizontal scaling
         * [FD-1931] - Fixed Kafka consumer group (KAFKA_CONSUMER_GROUP) and configurable

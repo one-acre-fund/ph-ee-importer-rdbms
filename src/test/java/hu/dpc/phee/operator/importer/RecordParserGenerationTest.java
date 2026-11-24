@@ -268,7 +268,7 @@ public class RecordParserGenerationTest {
 
         recordParser.processWorkflowInstance(activating);
 
-        verify(inflightTransferManager).transferStarted(PARENT_KEY, TS, "OUTGOING");
+        verify(inflightTransferManager).transferStarted(PARENT_KEY, TS, "OUTGOING", false);
         assertEquals(PARENT_KEY, callActivities().get(childKey));
 
         ArgumentCaptor<CallActivityLink> link = ArgumentCaptor.forClass(CallActivityLink.class);
@@ -297,7 +297,7 @@ public class RecordParserGenerationTest {
         when(bpmnProcessProperties.getById("csv_batch")).thenReturn(process);
         Batch batch = new Batch(KEY, 0L);
         batch.setRequestFile("batch-42.csv");
-        when(batchRepository.findFirstByWorkflowInstanceKeyAndCompletedAtIsNullOrderByIdDesc(KEY)).thenReturn(batch);
+        when(inflightBatchManager.findBatch(KEY, TS)).thenReturn(batch);
         when(tempDocumentStore.getBatchFileName(KEY)).thenReturn(null);
         // the download "succeeds" but the local file does not exist, so the import stops after the file lookup
         when(fileTransferService.downloadFile(any(), any())).thenReturn("/nonexistent/batch-42.csv");
@@ -305,6 +305,26 @@ public class RecordParserGenerationTest {
         recordParser.processWorkflowInstance(processJson(KEY, "csv_batch-tn01", "ELEMENT_COMPLETED", -1L));
 
         verify(fileTransferService).downloadFile(eq("batch-42.csv"), any());
+        verify(inflightBatchManager).batchEnded(KEY, TS);
+    }
+
+    @Test
+    public void batchCompletionFallsBackToTheNewestBatchWhenNoGenerationMatchesItsTime() {
+        BpmnProcess process = new BpmnProcess();
+        process.setId("csv_batch");
+        process.setType("BATCH");
+        process.setDirection("UNKNOWN");
+        when(bpmnProcessProperties.getById("csv_batch")).thenReturn(process);
+        Batch latest = new Batch(KEY, 3L);
+        latest.setRequestFile("batch-43.csv");
+        when(inflightBatchManager.findBatch(KEY, TS)).thenReturn(null);
+        when(batchRepository.findTopByWorkflowInstanceKeyOrderByZeebeGenerationDesc(KEY)).thenReturn(latest);
+        when(tempDocumentStore.getBatchFileName(KEY)).thenReturn(null);
+        when(fileTransferService.downloadFile(any(), any())).thenReturn("/nonexistent/batch-43.csv");
+
+        recordParser.processWorkflowInstance(processJson(KEY, "csv_batch-tn01", "ELEMENT_COMPLETED", -1L));
+
+        verify(fileTransferService).downloadFile(eq("batch-43.csv"), any());
         verify(inflightBatchManager).batchEnded(KEY, TS);
     }
 

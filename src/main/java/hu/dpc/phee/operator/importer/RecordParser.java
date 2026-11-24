@@ -274,7 +274,8 @@ public class RecordParser {
                 if (hasParent) {
                     logger.info("Sub process {} with key {} started from parent instance {}", bpmnProcessBaseId, callActivityKey, parentWorkflowInstanceKey);
                     rememberCallActivity(callActivityKey, parentWorkflowInstanceKey);
-                    inflightTransferManager.transferStarted(parentWorkflowInstanceKey, timestamp, outgoingDirection);
+                    // Not a root start: the parent transfer is already running under this generation.
+                    inflightTransferManager.transferStarted(parentWorkflowInstanceKey, timestamp, outgoingDirection, false);
                 } else {
                     logger.info("Transfer process {} started for instance {}", bpmnProcessBaseId, workflowInstanceKey);
                     inflightTransferManager.transferStarted(workflowInstanceKey, timestamp, bpmnProcess.getDirection());
@@ -360,8 +361,9 @@ public class RecordParser {
     // reads data from csv file and write data to transfers table
     private void updateTransferTableForBatch(Long workflowInstanceKey, Long completeTimestamp) {
         // The completion event can reach a replica that never saw the filename and batchId
-        // variables, so fall back to the batch row those variables were written to.
-        Batch batch = batchRepository.findFirstByWorkflowInstanceKeyAndCompletedAtIsNullOrderByIdDesc(workflowInstanceKey);
+        // variables, so fall back to the batch row those variables were written to: the generation
+        // that was running when the completion happened, not whichever row is open now.
+        Batch batch = inflightBatchManager.findBatch(workflowInstanceKey, completeTimestamp);
         if (batch == null) {
             batch = batchRepository.findTopByWorkflowInstanceKeyOrderByZeebeGenerationDesc(workflowInstanceKey);
         }

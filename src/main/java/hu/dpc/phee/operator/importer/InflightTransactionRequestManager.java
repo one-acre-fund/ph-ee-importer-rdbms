@@ -2,21 +2,14 @@ package hu.dpc.phee.operator.importer;
 
 import hu.dpc.phee.operator.entity.transactionrequest.TransactionRequest;
 import hu.dpc.phee.operator.entity.transactionrequest.TransactionRequestRepository;
-import hu.dpc.phee.operator.entity.tenant.ThreadLocalContextUtil;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.Date;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.List;
 
 @Component
-public class InflightTransactionRequestManager {
-
-    private final Logger logger = LoggerFactory.getLogger(this.getClass());
-    private final Map<Long, TransactionRequest> inflightTransactionRequests = new HashMap<>();
+public class InflightTransactionRequestManager extends InflightGenerationManager<TransactionRequest> {
 
     @Autowired
     private TransactionRequestRepository transactionRequestRepository;
@@ -25,7 +18,7 @@ public class InflightTransactionRequestManager {
     private TempDocumentStore tempDocumentStore;
 
     public void transactionRequestStarted(Long workflowInstanceKey, Long timestamp, String direction) {
-        TransactionRequest transactionRequest = getOrCreateTransactionRequest(workflowInstanceKey);
+        TransactionRequest transactionRequest = resolveRow(workflowInstanceKey, timestamp, true);
         if (transactionRequest.getStartedAt() == null) {
             transactionRequest.setDirection(direction);
             transactionRequest.setStartedAt(new Date(timestamp));
@@ -37,105 +30,37 @@ public class InflightTransactionRequestManager {
     }
 
     public void transactionRequestEnded(Long workflowInstanceKey, Long timestamp) {
-        synchronized (inflightTransactionRequests) {
-            TransactionRequest transactionRequest = inflightTransactionRequests.remove(workflowInstanceKey);
-            if (transactionRequest == null) {
-                logger.error("failed to remove in-flight transactionRequest {}", workflowInstanceKey);
-                transactionRequest = transactionRequestRepository.findFirstByWorkflowInstanceKeyAndCompletedAtIsNullOrderByIdDesc(workflowInstanceKey);
-                if (transactionRequest == null || transactionRequest.getCompletedAt() != null) {
-                    logger.error("completed event arrived for non existent transactionRequest {} or it was already finished!", workflowInstanceKey);
-                    return;
-                }
-            }
-
-            transactionRequest.setCompletedAt(new Date(timestamp));
-
-            save(transactionRequest);
+        if (end(workflowInstanceKey, timestamp) != null) {
             tempDocumentStore.deleteDocument(workflowInstanceKey);
-            logger.debug("transactionRequest {} finished", transactionRequest.getWorkflowInstanceKey());
         }
     }
 
     public TransactionRequest getOrCreateTransactionRequest(Long workflowInstanceKey) {
-        synchronized (inflightTransactionRequests) {
-            TransactionRequest transactionRequest = inflightTransactionRequests.get(workflowInstanceKey);
-            if (transactionRequest == null) {
-                transactionRequest = transactionRequestRepository.findFirstByWorkflowInstanceKeyAndCompletedAtIsNullOrderByIdDesc(workflowInstanceKey);
-                if (transactionRequest == null) {
-                    transactionRequest = redeliveredTransactionRequest(workflowInstanceKey);
-                }
-                if (transactionRequest == null) {
-                    Long nextGeneration = getNextGeneration(workflowInstanceKey);
-                    transactionRequest = new TransactionRequest(workflowInstanceKey, nextGeneration);
-                } else if (transactionRequest.getZeebeGeneration() == null) {
-                    transactionRequest.setZeebeGeneration(0L);
-                }
-                inflightTransactionRequests.put(workflowInstanceKey, transactionRequest);
-            }
-            return transactionRequest;
-        }
+        return getOrCreate(workflowInstanceKey);
     }
 
-
-    /**
-     * Persists the entity and keeps the managed copy in the cache. EclipseLink's merge leaves the
-     * passed object's version untouched, so saving the same instance twice would fail the
-     * optimistic lock on the second save.
-     */
-    public TransactionRequest save(TransactionRequest entity) {
-        TransactionRequest saved = transactionRequestRepository.save(entity);
-        if (saved != null) {
-            synchronized (inflightTransactionRequests) {
-                if (inflightTransactionRequests.get(entity.getWorkflowInstanceKey()) == entity) {
-                    inflightTransactionRequests.put(entity.getWorkflowInstanceKey(), saved);
-                }
-            }
-            return saved;
-        }
-        return entity;
+    @Override
+    protected List<TransactionRequest> loadRows(Long workflowInstanceKey) {
+        return transactionRequestRepository.findByWorkflowInstanceKeyOrderByZeebeGenerationAsc(workflowInstanceKey);
     }
 
-    public void clear() {
-        synchronized (inflightTransactionRequests) {
-            inflightTransactionRequests.clear();
-        }
+    @Override
+    protected TransactionRequest newRow(Long workflowInstanceKey, long zeebeGeneration) {
+        return new TransactionRequest(workflowInstanceKey, zeebeGeneration);
     }
 
-    /**
-     * Memory-only lookup. Used on the hot path so child events do not query the DB
-     * after the process row is already inflight.
-     */
-    public Long peekGeneration(Long workflowInstanceKey) {
-        synchronized (inflightTransactionRequests) {
-            TransactionRequest transactionRequest = inflightTransactionRequests.get(workflowInstanceKey);
-            return transactionRequest == null ? null : transactionRequest.getZeebeGeneration();
-        }
+    @Override
+    protected TransactionRequest persist(TransactionRequest row) {
+        return transactionRequestRepository.save(row);
     }
 
-    /**
-     * A record whose Zeebe timestamp is not after the latest completion is a redelivery (Kafka
-     * at-least-once), not a new process instance reusing the key. Reuse the row of the generation
-     * that was running at that time instead of opening a new one.
-     */
-    private TransactionRequest redeliveredTransactionRequest(Long workflowInstanceKey) {
-        Long recordTimestamp = ThreadLocalContextUtil.getRecordTimestamp();
-        if (recordTimestamp == null) {
-            return null;
-        }
-        TransactionRequest match = RedeliveryMatcher.match(
-                transactionRequestRepository.findByWorkflowInstanceKeyOrderByZeebeGenerationAsc(workflowInstanceKey), recordTimestamp);
-        if (match != null) {
-            logger.info("record for completed transactionRequest {} generation {} redelivered, reusing row", workflowInstanceKey, match.getZeebeGeneration());
-        }
-        return match;
+    @Override
+    protected Long instanceKey(TransactionRequest row) {
+        return row.getWorkflowInstanceKey();
     }
 
-    private Long getNextGeneration(Long workflowInstanceKey) {
-        // Only called when creating a new row (first event for this key in this run).
-        TransactionRequest latestTransactionRequest = transactionRequestRepository.findTopByWorkflowInstanceKeyOrderByZeebeGenerationDesc(workflowInstanceKey);
-        if (latestTransactionRequest == null || latestTransactionRequest.getZeebeGeneration() == null) {
-            return 0L;
-        }
-        return latestTransactionRequest.getZeebeGeneration() + 1;
+    @Override
+    protected String kind() {
+        return "transactionRequest";
     }
 }
