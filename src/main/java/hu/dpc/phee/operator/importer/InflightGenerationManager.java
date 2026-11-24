@@ -5,6 +5,8 @@ import hu.dpc.phee.operator.entity.tenant.ThreadLocalContextUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.ArrayList;
 import java.util.Date;
@@ -64,6 +66,7 @@ abstract class InflightGenerationManager<T extends GenerationRow> {
      *                  prove an open row belongs to an earlier process instance with the same key
      */
     protected T resolveRow(Long workflowInstanceKey, Long recordTimestamp, boolean rootStart) {
+        evictOnRollback(workflowInstanceKey);
         synchronized (inflight) {
             T live = inflight.get(workflowInstanceKey);
             if (live != null && GenerationWindows.acceptsLiveRow(live, recordTimestamp, rootStart, maxIdleMillis())) {
@@ -213,6 +216,28 @@ abstract class InflightGenerationManager<T extends GenerationRow> {
     }
 
     /**
+     * The cache is written before the transaction commits. If it does not commit, for whatever
+     * reason, the cached row (new, or changed by this record) is not what the database holds, so it
+     * is dropped and the replayed record starts again from the committed rows. Only this key: the
+     * other rows in the cache belong to transactions that did commit.
+     */
+    private void evictOnRollback(Long workflowInstanceKey) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status != STATUS_COMMITTED) {
+                    synchronized (inflight) {
+                        inflight.remove(workflowInstanceKey);
+                    }
+                }
+            }
+        });
+    }
+
+    /**
      * The newest row when its COMPLETED_AT came from a terminal status variable and the real
      * completion is only arriving now, with the row no longer cached (rebalance). A completion never
      * starts a generation, so one that is newer than every row can only belong to the newest; a
@@ -224,8 +249,7 @@ abstract class InflightGenerationManager<T extends GenerationRow> {
             return null;
         }
         T newest = rows.get(rows.size() - 1);
-        boolean tooLate = maxIdleMillis() > 0 && timestamp - newest.getCompletedAt().getTime() > maxIdleMillis();
-        return hasTerminalStatus(newest) && !tooLate ? newest : null;
+        return hasTerminalStatus(newest) && !GenerationWindows.isIdle(newest, timestamp, maxIdleMillis()) ? newest : null;
     }
 
     /**

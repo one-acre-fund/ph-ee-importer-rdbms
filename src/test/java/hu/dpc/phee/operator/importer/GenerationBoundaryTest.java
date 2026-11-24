@@ -230,6 +230,29 @@ public class GenerationBoundaryTest {
     }
 
     @Test
+    public void provisionalCompletionIsMeasuredFromTheLastActivity() {
+        requestManager.setMaxIdleMinutes(1);
+        TransactionRequest row = request(TransactionRequestState.ACCEPTED, 5_000L);
+        row.setLastEventAt(new Date(65_000L)); // kept receiving records after its terminal status
+
+        requestManager.transactionRequestEnded(KEY, 66_000L);
+
+        assertEquals(66_000L, row.getCompletedAt().getTime());
+        verify(tempDocumentStore).deleteDocument(KEY);
+    }
+
+    @Test
+    public void provisionalCompletionAfterTheIdleLimitIsIgnored() {
+        requestManager.setMaxIdleMinutes(1);
+        TransactionRequest row = request(TransactionRequestState.ACCEPTED, 5_000L);
+        row.setLastEventAt(new Date(65_000L));
+
+        requestManager.transactionRequestEnded(KEY, 65_000L + 60_001L);
+
+        assertEquals(5_000L, row.getCompletedAt().getTime());
+    }
+
+    @Test
     public void disabledIdleLimitDoesNotLimitTheProvisionalCompletion() {
         requestManager.setMaxIdleMinutes(0);
         TransactionRequest row = request(TransactionRequestState.REJECTED, 5_000L);
