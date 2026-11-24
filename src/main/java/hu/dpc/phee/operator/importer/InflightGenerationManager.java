@@ -32,7 +32,7 @@ abstract class InflightGenerationManager<T extends GenerationRow> {
      * belongs to a process Zeebe lost (broker reset) and is closed; the record opens a new
      * generation. 0 disables the check.
      */
-    @Value("${importer.generation.max-idle-minutes:1440}")
+    @Value("${importer.generation.max-idle-minutes:10080}")
     private long maxIdleMinutes;
 
     /** Every row of the key, ordered by generation ascending; an empty list when there are none. */

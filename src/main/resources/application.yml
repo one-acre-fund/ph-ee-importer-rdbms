@@ -25,7 +25,7 @@ importer:
     # than this, when a new record for its workflow instance key arrives, belongs to a process Zeebe
     # lost (broker reset) and is closed, so the reused key opens a new ZEEBE_GENERATION instead of
     # writing over it. Must exceed the longest silent wait of any live flow. 0 disables the check.
-    max-idle-minutes: 1440
+    max-idle-minutes: 10080 # 7 days
   variables:
     # Names never written to the variables table: timers, feature flags, retry counters and HTTP
     # codes that carry no payment information (FD-1737). Names that VariableParser maps into the
