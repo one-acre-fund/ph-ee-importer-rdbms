@@ -16,9 +16,7 @@ import hu.dpc.phee.operator.entity.task.TaskRepository;
 import hu.dpc.phee.operator.entity.tenant.ThreadLocalContextUtil;
 import hu.dpc.phee.operator.entity.transactionrequest.TransactionRequest;
 import hu.dpc.phee.operator.entity.transactionrequest.TransactionRequestRepository;
-import hu.dpc.phee.operator.entity.transactionrequest.TransactionRequestState;
 import hu.dpc.phee.operator.entity.transfer.Transfer;
-import hu.dpc.phee.operator.entity.transfer.TransferStatus;
 import hu.dpc.phee.operator.entity.transfer.TransferRepository;
 import hu.dpc.phee.operator.entity.variable.Variable;
 import hu.dpc.phee.operator.entity.variable.VariableRepository;
@@ -105,8 +103,6 @@ public class RecordParser {
     @Autowired
     private VariableParser variableParser;
 
-    @Autowired
-    private TempDocumentStore tempDocumentStore;
     @Autowired
     private CallActivityLinkRepository callActivityLinkRepository;
 
@@ -195,18 +191,6 @@ public class RecordParser {
                 Batch batch = inflightBatchManager.getOrCreateBatch(workflowInstanceKey);
                 variableParser.getBatchParsers().get(name).accept(Pair.of(batch, value));
                 inflightBatchManager.save(batch);
-
-                if (!bpmnProcess.getId().equalsIgnoreCase("bulk_processor")) {
-                    logger.info("Inside if condition {}", name);
-                    if (name.equals("filename")) {
-                        logger.info("store filename {} in tempDocStore for instance {}", strip(value), workflowInstanceKey);
-                        tempDocumentStore.storeBatchFileName(workflowInstanceKey, value);
-                    }
-                    if (name.equals("batchId")) {
-                        logger.info("store batchid {} in tempDocStore for instance {}", strip(value), workflowInstanceKey);
-                        tempDocumentStore.storeBatchId(workflowInstanceKey, value);
-                    }
-                }
             }
         }
         else {
@@ -274,7 +258,8 @@ public class RecordParser {
                 if (hasParent) {
                     logger.info("Sub process {} with key {} started from parent instance {}", bpmnProcessBaseId, callActivityKey, parentWorkflowInstanceKey);
                     rememberCallActivity(callActivityKey, parentWorkflowInstanceKey);
-                    inflightTransferManager.transferStarted(parentWorkflowInstanceKey, timestamp, outgoingDirection);
+                    // Not a root start: the parent transfer is already running under this generation.
+                    inflightTransferManager.transferStarted(parentWorkflowInstanceKey, timestamp, outgoingDirection, false);
                 } else {
                     logger.info("Transfer process {} started for instance {}", bpmnProcessBaseId, workflowInstanceKey);
                     inflightTransferManager.transferStarted(workflowInstanceKey, timestamp, bpmnProcess.getDirection());
@@ -359,16 +344,18 @@ public class RecordParser {
 
     // reads data from csv file and write data to transfers table
     private void updateTransferTableForBatch(Long workflowInstanceKey, Long completeTimestamp) {
-        // The completion event can reach a replica that never saw the filename and batchId
-        // variables, so fall back to the batch row those variables were written to.
-        Batch batch = batchRepository.findFirstByWorkflowInstanceKeyAndCompletedAtIsNullOrderByIdDesc(workflowInstanceKey);
+        // File name and batch id come from the row their variables were written to: the generation
+        // that was running when the completion happened, not whichever row is open now. A replica
+        // that never saw those variables finds them there too.
+        Batch batch = inflightBatchManager.findBatch(workflowInstanceKey, completeTimestamp);
         if (batch == null) {
             batch = batchRepository.findTopByWorkflowInstanceKeyOrderByZeebeGenerationDesc(workflowInstanceKey);
         }
-        String filename = tempDocumentStore.getBatchFileName(workflowInstanceKey);
-        if (filename == null && batch != null) {
-            filename = batch.getRequestFile();
+        if (batch == null) {
+            logger.error("No batch found for workflow instance key {}, skip transfer update", workflowInstanceKey);
+            return;
         }
+        String filename = batch.getRequestFile();
         logger.info("Filename {}", filename);
         if (filename == null) {
             return;
@@ -395,10 +382,6 @@ public class RecordParser {
             return;
         }
 
-        if (batch == null) {
-            logger.error("No batch found for workflow instance key {}, skip transfer update", workflowInstanceKey);
-            return;
-        }
         for (Transaction transaction: transactionList) {
             // The completion event can be delivered more than once (at-least-once); do not re-insert rows.
             if (transferRepository.existsByWorkflowInstanceKeyAndZeebeGenerationAndTransactionId(
@@ -409,8 +392,7 @@ public class RecordParser {
             Transfer transfer = BatchFormatToTransferMapper.mapToTransferEntity(transaction);
             transfer.setWorkflowInstanceKey(workflowInstanceKey);
             transfer.setZeebeGeneration(batch.getZeebeGeneration());
-            String batchId = tempDocumentStore.getBatchId(workflowInstanceKey);
-            transfer.setBatchId(batchId == null ? batch.getBatchId() : strip(batchId));
+            transfer.setBatchId(batch.getBatchId());
             transfer.setCompletedAt(new Date(completeTimestamp));
             transfer.setTransactionId(transaction.getRequestId());
 
@@ -507,7 +489,7 @@ public class RecordParser {
         if (transfer.getStartedAt() == null) {
             transfer.setStartedAt(eventTime);
         }
-        if (transfer.getCompletedAt() == null && isTerminalTransferStatus(transfer.getStatus())) {
+        if (transfer.getCompletedAt() == null && transfer.getStatus() != null && transfer.getStatus().isTerminal()) {
             transfer.setCompletedAt(eventTime);
         }
     }
@@ -520,7 +502,7 @@ public class RecordParser {
         if (transactionRequest.getStartedAt() == null) {
             transactionRequest.setStartedAt(eventTime);
         }
-        if (transactionRequest.getCompletedAt() == null && isTerminalTransactionRequestState(transactionRequest.getState())) {
+        if (transactionRequest.getCompletedAt() == null && transactionRequest.getState() != null && transactionRequest.getState().isTerminal()) {
             transactionRequest.setCompletedAt(eventTime);
         }
     }
@@ -528,16 +510,5 @@ public class RecordParser {
     private Date toEventTime(DocumentContext event) {
         Long timestamp = ZeebeRecordReader.readTimestamp(event);
         return timestamp == null ? null : new Date(timestamp);
-    }
-
-    private boolean isTerminalTransferStatus(TransferStatus status) {
-        return TransferStatus.COMPLETED.equals(status) || TransferStatus.FAILED.equals(status);
-    }
-
-    private boolean isTerminalTransactionRequestState(TransactionRequestState state) {
-        return TransactionRequestState.ACCEPTED.equals(state)
-                || TransactionRequestState.FAILED.equals(state)
-                || TransactionRequestState.REJECTED.equals(state)
-                || TransactionRequestState.NOT_AUTOSAVED.equals(state);
     }
 }

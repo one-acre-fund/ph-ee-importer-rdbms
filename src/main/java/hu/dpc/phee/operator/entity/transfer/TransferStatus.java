@@ -5,5 +5,9 @@ public enum TransferStatus {
     COMPLETED,
     FAILED,
     IN_PROGRESS,
-    UNKNOWN
+    UNKNOWN;
+
+    public boolean isTerminal() {
+        return this == COMPLETED || this == FAILED;
+    }
 }

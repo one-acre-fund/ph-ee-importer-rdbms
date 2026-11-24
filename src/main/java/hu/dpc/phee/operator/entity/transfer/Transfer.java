@@ -47,6 +47,11 @@ public class Transfer extends AbstractPersistableCustom<Long> implements Generat
     @Column(name = "COMPLETED_AT")
     private Date completedAt;
 
+    // Zeebe timestamp of the newest record applied to this row. Tells a live generation from one
+    // whose process was lost (Zeebe reset) so a recycled key does not write over it.
+    @Column(name = "LAST_EVENT_AT")
+    private Date lastEventAt;
+
     @Enumerated(EnumType.STRING)
     private TransferStatus status;
 
@@ -177,6 +182,16 @@ public class Transfer extends AbstractPersistableCustom<Long> implements Generat
 
     public Long getZeebeGeneration() {
         return zeebeGeneration;
+    }
+
+    @Override
+    public Date getLastEventAt() {
+        return lastEventAt;
+    }
+
+    @Override
+    public void setLastEventAt(Date lastEventAt) {
+        this.lastEventAt = lastEventAt;
     }
 
     public void setZeebeGeneration(Long zeebeGeneration) {

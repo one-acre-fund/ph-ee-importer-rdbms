@@ -8,4 +8,8 @@ public enum TransactionRequestState {
     ACCEPTED,
     REJECTED,
     FAILED;
+
+    public boolean isTerminal() {
+        return this == ACCEPTED || this == FAILED || this == REJECTED || this == NOT_AUTOSAVED;
+    }
 }
