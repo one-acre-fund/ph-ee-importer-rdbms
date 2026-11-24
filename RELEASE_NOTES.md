@@ -3,7 +3,10 @@
 ## Version 1.2.1 - Up to date with Mifos Version 1.0.0-SNAPSHOT
     *  Generation resolution by record time
         * [FD-1987] - A record is matched to the generation that was running at its timestamp instead of the latest one,
-                      so a replayed record can be routed to the same instance that was running when it was first processed
+                      so a replayed record can be routed to the same instance that was running when it was first processed.
+                      Requires the operations app tenant migration V58 (LAST_EVENT_AT on transfers, transaction_requests
+                      and batches), which must run before this image starts: without the column every read of these
+                      tables fails and the records are retried without limit
 
 ## Version 1.2.0 - Up to date with Mifos Version 1.0.0-SNAPSHOT
     *  Horizontal scaling

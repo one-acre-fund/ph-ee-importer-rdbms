@@ -4,6 +4,7 @@ import hu.dpc.phee.operator.entity.batch.Batch;
 import hu.dpc.phee.operator.entity.batch.BatchRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Date;
 import java.util.List;
@@ -14,6 +15,8 @@ public class InflightBatchManager extends InflightGenerationManager<Batch> {
     @Autowired
     private BatchRepository batchRepository;
 
+    // One transaction: closing the lost previous row and saving its replacement succeed together.
+    @Transactional
     public void batchStarted(Long workflowInstanceKey, Long timestamp, String direction) {
         Batch batch = resolveRow(workflowInstanceKey, timestamp, true);
         if (batch.getStartedAt() == null) {

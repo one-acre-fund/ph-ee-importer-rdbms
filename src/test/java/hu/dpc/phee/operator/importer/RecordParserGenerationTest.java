@@ -18,6 +18,7 @@ import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnitRunner;
 
 import java.lang.reflect.Field;
@@ -64,9 +65,6 @@ public class RecordParserGenerationTest {
     private BatchRepository batchRepository;
     @Mock
     private FileTransferService fileTransferService;
-    @Mock
-    private TempDocumentStore tempDocumentStore;
-
     @InjectMocks
     private RecordParser recordParser;
 
@@ -289,7 +287,7 @@ public class RecordParserGenerationTest {
     }
 
     @Test
-    public void batchCompletionReadsTheFileNameFromTheBatchRowWhenTheTempStoreMisses() {
+    public void batchCompletionReadsTheFileNameFromTheBatchRow() {
         BpmnProcess process = new BpmnProcess();
         process.setId("csv_batch");
         process.setType("BATCH");
@@ -298,7 +296,6 @@ public class RecordParserGenerationTest {
         Batch batch = new Batch(KEY, 0L);
         batch.setRequestFile("batch-42.csv");
         when(inflightBatchManager.findBatch(KEY, TS)).thenReturn(batch);
-        when(tempDocumentStore.getBatchFileName(KEY)).thenReturn(null);
         // the download "succeeds" but the local file does not exist, so the import stops after the file lookup
         when(fileTransferService.downloadFile(any(), any())).thenReturn("/nonexistent/batch-42.csv");
 
@@ -319,13 +316,34 @@ public class RecordParserGenerationTest {
         latest.setRequestFile("batch-43.csv");
         when(inflightBatchManager.findBatch(KEY, TS)).thenReturn(null);
         when(batchRepository.findTopByWorkflowInstanceKeyOrderByZeebeGenerationDesc(KEY)).thenReturn(latest);
-        when(tempDocumentStore.getBatchFileName(KEY)).thenReturn(null);
         when(fileTransferService.downloadFile(any(), any())).thenReturn("/nonexistent/batch-43.csv");
 
         recordParser.processWorkflowInstance(processJson(KEY, "csv_batch-tn01", "ELEMENT_COMPLETED", -1L));
 
         verify(fileTransferService).downloadFile(eq("batch-43.csv"), any());
         verify(inflightBatchManager).batchEnded(KEY, TS);
+    }
+
+    @Test
+    public void replayedBatchCompletionReadsTheFileOfItsOwnGeneration() {
+        BpmnProcess process = new BpmnProcess();
+        process.setId("csv_batch");
+        process.setType("BATCH");
+        process.setDirection("UNKNOWN");
+        when(bpmnProcessProperties.getById("csv_batch")).thenReturn(process);
+        Batch previous = new Batch(KEY, 0L);
+        previous.setRequestFile("generation-0.csv");
+        when(inflightBatchManager.findBatch(KEY, TS)).thenReturn(previous);
+        // generation 1 of the key is the one running now
+        Batch current = new Batch(KEY, 1L);
+        current.setRequestFile("generation-1.csv");
+        Mockito.lenient().when(inflightBatchManager.getOrCreateBatch(KEY)).thenReturn(current);
+        Mockito.lenient().when(batchRepository.findTopByWorkflowInstanceKeyOrderByZeebeGenerationDesc(KEY)).thenReturn(current);
+        when(fileTransferService.downloadFile(any(), any())).thenReturn("/nonexistent/generation-0.csv");
+
+        recordParser.processWorkflowInstance(processJson(KEY, "csv_batch-tn01", "ELEMENT_COMPLETED", -1L));
+
+        verify(fileTransferService).downloadFile(eq("generation-0.csv"), any());
     }
 
     private static DocumentContext variableJson(Long key, String name, long timestamp) {

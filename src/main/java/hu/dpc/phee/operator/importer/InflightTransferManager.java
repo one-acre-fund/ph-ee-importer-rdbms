@@ -4,6 +4,7 @@ import hu.dpc.phee.operator.entity.transfer.Transfer;
 import hu.dpc.phee.operator.entity.transfer.TransferRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Date;
 import java.util.List;
@@ -15,6 +16,8 @@ public class InflightTransferManager extends InflightGenerationManager<Transfer>
     private TransferRepository transferRepository;
 
     /** Start of the transfer's own root process. */
+    // One transaction: closing the lost previous row and saving its replacement succeed together.
+    @Transactional
     public void transferStarted(Long workflowInstanceKey, Long timestamp, String direction) {
         transferStarted(workflowInstanceKey, timestamp, direction, true);
     }
@@ -23,6 +26,7 @@ public class InflightTransferManager extends InflightGenerationManager<Transfer>
      * @param rootStart false when a call-activity child starts inside the parent transfer: the
      *                  child's start must not be mistaken for a new run of the parent's key
      */
+    @Transactional
     public void transferStarted(Long workflowInstanceKey, Long timestamp, String direction, boolean rootStart) {
         Transfer transfer = resolveRow(workflowInstanceKey, timestamp, rootStart);
         // A variable record processed before ELEMENT_ACTIVATING already fills startedAt, so the
@@ -69,6 +73,11 @@ public class InflightTransferManager extends InflightGenerationManager<Transfer>
     @Override
     protected Long instanceKey(Transfer row) {
         return row.getWorkflowInstanceKey();
+    }
+
+    @Override
+    protected boolean hasTerminalStatus(Transfer row) {
+        return row.getStatus() != null && row.getStatus().isTerminal();
     }
 
     @Override

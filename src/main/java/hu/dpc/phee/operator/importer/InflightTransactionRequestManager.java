@@ -4,6 +4,7 @@ import hu.dpc.phee.operator.entity.transactionrequest.TransactionRequest;
 import hu.dpc.phee.operator.entity.transactionrequest.TransactionRequestRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Date;
 import java.util.List;
@@ -17,6 +18,8 @@ public class InflightTransactionRequestManager extends InflightGenerationManager
     @Autowired
     private TempDocumentStore tempDocumentStore;
 
+    // One transaction: closing the lost previous row and saving its replacement succeed together.
+    @Transactional
     public void transactionRequestStarted(Long workflowInstanceKey, Long timestamp, String direction) {
         TransactionRequest transactionRequest = resolveRow(workflowInstanceKey, timestamp, true);
         if (transactionRequest.getStartedAt() == null) {
@@ -57,6 +60,11 @@ public class InflightTransactionRequestManager extends InflightGenerationManager
     @Override
     protected Long instanceKey(TransactionRequest row) {
         return row.getWorkflowInstanceKey();
+    }
+
+    @Override
+    protected boolean hasTerminalStatus(TransactionRequest row) {
+        return row.getState() != null && row.getState().isTerminal();
     }
 
     @Override

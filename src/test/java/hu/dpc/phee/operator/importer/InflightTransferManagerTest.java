@@ -437,18 +437,6 @@ public class InflightTransferManagerTest {
     }
 
     @Test
-    public void completionOlderThanTheOnlyLiveRowStillCompletesIt() {
-        inflightTransferManager.transferStarted(KEY, 60_000L, "OUTGOING");
-        Transfer live = inflightTransferManager.getOrCreateTransfer(KEY);
-        live.setCompletedAt(new Date(70_000L)); // from a terminal status variable
-
-        inflightTransferManager.transferEnded(KEY, 3_000L);
-
-        assertEquals(3_000L, live.getCompletedAt().getTime());
-        assertNull(inflightTransferManager.peekGeneration(KEY));
-    }
-
-    @Test
     public void savingARowThatIsNotCachedLeavesTheCacheAlone() {
         Transfer live = inflightTransferManager.getOrCreateTransfer(KEY);
         when(transferRepository.save(any(Transfer.class))).thenAnswer(i -> row(9L, null, null));

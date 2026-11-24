@@ -11,13 +11,21 @@ import java.util.List;
  * Zeebe lost its state), so each row owns the time window from its STARTED_AT up to the next
  * row's start, closed early by its COMPLETED_AT.
  * <p>
- * STARTED_AT and COMPLETED_AT are DATETIME columns that MySQL rounds to the second, so the
- * comparisons are made in whole seconds with one second of tolerance on the start.
+ * STARTED_AT and COMPLETED_AT are DATETIME columns that MySQL rounds to the second, so a start is
+ * compared with half a second of tolerance and a completion in whole seconds.
  */
 final class GenerationWindows {
 
-    /** Rounding of STARTED_AT can move it up to one second past the record that set it. */
-    static final long START_TOLERANCE_SECONDS = 1;
+    /** Rounding of STARTED_AT can move it up to half a second past the record that set it. */
+    static final long START_ROUNDING_MILLIS = 500;
+
+    /**
+     * How long the root start may trail the first record of its own run. STARTED_AT is set by the
+     * first record, usually a variable created together with the instance, and a busy broker can
+     * append ELEMENT_ACTIVATING seconds later. Far shorter than a broker reset takes, so a new run
+     * of the key cannot start within it.
+     */
+    static final long MAX_ROOT_START_DELAY_MILLIS = 30_000;
 
     private GenerationWindows() {
     }
@@ -83,6 +91,9 @@ final class GenerationWindows {
                 break;
             }
         }
+        if (index > 0 && !rootStart && belongsToPrevious(rowsByGenerationAsc.get(index - 1), rowsByGenerationAsc.get(index), recordTimestamp)) {
+            index--;
+        }
         if (index < 0) {
             // Older than every recorded start: the record can only belong to the first generation.
             return new Resolution<>(rowsByGenerationAsc.get(0), last == 0, null, nextGeneration);
@@ -113,7 +124,7 @@ final class GenerationWindows {
         if (recordTimestamp == null) {
             return true;
         }
-        return !startsAfter(liveRow, recordTimestamp)
+        return !precedesStart(liveRow, recordTimestamp)
                 && !isLaterStart(liveRow, recordTimestamp, rootStart)
                 && !isIdle(liveRow, recordTimestamp, maxIdleMillis);
     }
@@ -121,17 +132,36 @@ final class GenerationWindows {
     /** The record is older than the row's start: it belongs to an earlier generation. */
     static boolean startsAfter(GenerationRow row, long recordTimestamp) {
         Date startedAt = row.getStartedAt();
-        return startedAt != null && seconds(recordTimestamp) < seconds(startedAt.getTime()) - START_TOLERANCE_SECONDS;
+        return startedAt != null && recordTimestamp < startedAt.getTime() - START_ROUNDING_MILLIS;
     }
 
     /**
-     * A root process start later than the row's own start is a new process instance that reuses
-     * the key. A redelivered start carries the same timestamp the row was started with.
+     * The record is older than the recorded start, by any amount. It may still belong to the row
+     * (rounding), so the caller has to look at the other generations to decide.
+     */
+    static boolean precedesStart(GenerationRow row, long recordTimestamp) {
+        Date startedAt = row.getStartedAt();
+        return startedAt != null && recordTimestamp < startedAt.getTime();
+    }
+
+    /**
+     * A record that only reaches {@code row} through the start tolerance, at a time the previous
+     * generation was still running, is a replay of that generation (e.g. its completion).
+     */
+    private static boolean belongsToPrevious(GenerationRow previous, GenerationRow row, long recordTimestamp) {
+        Date previousCompletedAt = previous.getCompletedAt();
+        return precedesStart(row, recordTimestamp) && previousCompletedAt != null
+                && seconds(recordTimestamp) <= seconds(previousCompletedAt.getTime());
+    }
+
+    /**
+     * A root process start well after the row's own start is a new process instance that reuses
+     * the key. The row's own root start, first delivered or redelivered, is close to STARTED_AT.
      */
     static boolean isLaterStart(GenerationRow row, long recordTimestamp, boolean rootStart) {
         Date startedAt = row.getStartedAt();
         return rootStart && startedAt != null
-                && seconds(recordTimestamp) > seconds(startedAt.getTime()) + START_TOLERANCE_SECONDS;
+                && recordTimestamp - startedAt.getTime() > MAX_ROOT_START_DELAY_MILLIS;
     }
 
     static boolean isIdle(GenerationRow row, long recordTimestamp, long maxIdleMillis) {

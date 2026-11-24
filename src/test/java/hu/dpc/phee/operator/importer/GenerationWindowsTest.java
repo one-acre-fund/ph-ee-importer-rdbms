@@ -83,10 +83,12 @@ public class GenerationWindowsTest {
 
     @Test
     public void redeliveredRootStartOfTheOpenRowReusesIt() {
-        Transfer open = row(0L, 1_000L, null);
+        Transfer earlier = row(0L, 1_000L, null);
+        Transfer open = row(1L, 2_000L, null);
 
-        // STARTED_AT came back rounded up from 1.4 s; the record keeps its milliseconds
-        GenerationWindows.Resolution<Transfer> r = GenerationWindows.resolve(Collections.singletonList(open), 1_400L, true, null, NO_IDLE);
+        // STARTED_AT came back rounded up from 1.6 s; the record keeps its milliseconds. The earlier
+        // open row makes sure it is the tolerance that picks the row, not the oldest-row fallback.
+        GenerationWindows.Resolution<Transfer> r = GenerationWindows.resolve(Arrays.asList(earlier, open), 1_600L, true, null, NO_IDLE);
 
         assertSame(open, r.row);
         assertNull(r.rowToClose);
@@ -138,7 +140,9 @@ public class GenerationWindowsTest {
         Transfer live = row(1L, 60_000L, null);
 
         assertTrue(GenerationWindows.acceptsLiveRow(live, 61_000L, false, NO_IDLE));
-        assertTrue(GenerationWindows.acceptsLiveRow(live, 59_500L, false, NO_IDLE));
+        assertTrue(GenerationWindows.acceptsLiveRow(live, 60_000L, false, NO_IDLE));
+        // within the rounding distance: not rejected for good, but the other generations are checked first
+        assertFalse(GenerationWindows.acceptsLiveRow(live, 59_500L, false, NO_IDLE));
         assertFalse(GenerationWindows.acceptsLiveRow(live, 3_000L, false, NO_IDLE));
         assertTrue(GenerationWindows.acceptsLiveRow(live, null, true, NO_IDLE));
     }

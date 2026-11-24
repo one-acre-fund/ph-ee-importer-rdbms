@@ -110,7 +110,6 @@ public class GenerationScenarioTest {
         set(recordParser, "inflightTransactionRequestManager", transactionRequests);
         set(recordParser, "inflightBatchManager", batches);
         set(recordParser, "variableParser", variableParser);
-        set(recordParser, "tempDocumentStore", tempDocumentStore);
         set(recordParser, "callActivityLinkRepository", callActivityLinkRepository);
         set(recordParser, "workflowGenerationResolver", resolver);
     }

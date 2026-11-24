@@ -46,6 +46,14 @@ abstract class InflightGenerationManager<T extends GenerationRow> {
 
     protected abstract String kind();
 
+    /**
+     * The row's business status is final. Such a row gets its COMPLETED_AT from the status variable,
+     * before the ELEMENT_COMPLETED of its process arrives.
+     */
+    protected boolean hasTerminalStatus(T row) {
+        return false;
+    }
+
     /** Row for the record being processed on this thread, created when it opens a new generation. */
     protected T getOrCreate(Long workflowInstanceKey) {
         return resolveRow(workflowInstanceKey, ThreadLocalContextUtil.getRecordTimestamp(), false);
@@ -102,7 +110,7 @@ abstract class InflightGenerationManager<T extends GenerationRow> {
     protected T findExisting(Long workflowInstanceKey, Long recordTimestamp) {
         synchronized (inflight) {
             T live = inflight.get(workflowInstanceKey);
-            if (live != null && (recordTimestamp == null || !GenerationWindows.startsAfter(live, recordTimestamp))) {
+            if (live != null && (recordTimestamp == null || !GenerationWindows.precedesStart(live, recordTimestamp))) {
                 return live;
             }
             List<T> rows = withLiveRow(loadRows(workflowInstanceKey), live);
@@ -112,19 +120,26 @@ abstract class InflightGenerationManager<T extends GenerationRow> {
 
     /**
      * Completes the generation the ELEMENT_COMPLETED record belongs to. Returns the completed row,
-     * or null when there was none or it was already completed (redelivery).
+     * or null when there was none, it was already completed (redelivery) or it started after the
+     * record (completion of a run that has no row).
      */
     protected T end(Long workflowInstanceKey, Long timestamp) {
         synchronized (inflight) {
             T live = inflight.get(workflowInstanceKey);
             T row;
-            if (live != null && (timestamp == null || !GenerationWindows.startsAfter(live, timestamp))) {
+            if (live != null && (timestamp == null || !GenerationWindows.precedesStart(live, timestamp))) {
                 row = live;
             } else {
                 List<T> rows = withLiveRow(loadRows(workflowInstanceKey), live);
                 // An idle row is still the one this completion closes, so the idle rule is off here.
                 row = GenerationWindows.resolve(rows, timestamp, false, null, 0).row;
-                if (row == null || (row != live && row.getCompletedAt() != null)) {
+                boolean provisional = false;
+                if (row == null) {
+                    row = provisionallyCompleted(rows, timestamp);
+                    provisional = row != null;
+                }
+                if (row == null || (timestamp != null && GenerationWindows.startsAfter(row, timestamp))
+                        || (!provisional && row != live && row.getCompletedAt() != null)) {
                     logger.error("completed event at {} arrived for non existent {} {} or it was already finished!",
                             timestamp, kind(), workflowInstanceKey);
                     return null;
@@ -195,6 +210,22 @@ abstract class InflightGenerationManager<T extends GenerationRow> {
         if (inflight.get(workflowInstanceKey) == row) {
             inflight.remove(workflowInstanceKey);
         }
+    }
+
+    /**
+     * The newest row when its COMPLETED_AT came from a terminal status variable and the real
+     * completion is only arriving now, with the row no longer cached (rebalance). A completion never
+     * starts a generation, so one that is newer than every row can only belong to the newest; a
+     * replayed completion is never later than the COMPLETED_AT it set itself. Beyond the idle limit
+     * it is the completion of another run of the key.
+     */
+    private T provisionallyCompleted(List<T> rows, Long timestamp) {
+        if (rows.isEmpty() || timestamp == null) {
+            return null;
+        }
+        T newest = rows.get(rows.size() - 1);
+        boolean tooLate = maxIdleMillis() > 0 && timestamp - newest.getCompletedAt().getTime() > maxIdleMillis();
+        return hasTerminalStatus(newest) && !tooLate ? newest : null;
     }
 
     /**
